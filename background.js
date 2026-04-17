@@ -1,4 +1,4 @@
-// Calls LLM API with JSON data and returns generated SQL
+// Calls LLM API with JSON data and returns structured extraction result
 async function callLLMAPI(jsonData, config, customPrompt = null) {
   const { llmApiProvider, llmApiKey, llmApiEndpoint, llmModelName } = config;
 
@@ -12,76 +12,62 @@ async function callLLMAPI(jsonData, config, customPrompt = null) {
   } else if (jsonData && jsonData._prompt) {
     prompt = jsonData._prompt;
   } else if (jsonData) {
-    prompt = `You are a MySQL database expert and data extraction specialist. Generate a MySQL UPSERT SQL script from the following LinkedIn contact data.
+    prompt = `You are a data extraction specialist. Extract structured contact and job position data from the following LinkedIn conversation data.
 
-CRITICAL INSTRUCTIONS:
-1. Check if email and phone fields already have values in the JSON. If they do, USE THOSE VALUES.
-2. If email or phone is null or empty in JSON, extract them from the messages array.
-3. YOU MUST INCLUDE email and phone fields in the SQL INSERT statement, even if they are NULL.
-4. For phone numbers: ALWAYS REMOVE the "+" sign if present. Store phone numbers as digits only (e.g., "+1234567890" → "1234567890").
+RULES OF ENGAGEMENT (CRITICAL):
+1. **Conditional Contact Extraction**: Extract a contact ONLY if a PERSONAL business email address or phone number is found.
+2. **Exclude Generic/Automated Emails**: DO NOT extract emails starting with "support@", "info@", "donotreply@", "noreply@", "admin@", "hr@", or generic "hello@".
+3. **Conditional Job Extraction**: Generate a job position entry ONLY if the message mentions a specific job role AND contains a **personal email address**. Phone-only or URL-only records do NOT qualify. If no email is found, DO NOT extract the job into positions.
+4. **Multiple Jobs**: If the contact mentions multiple distinct job opportunities, create a SEPARATE position entry for EACH one.
+5. **No Data = Empty Arrays**: If NO valid personal email, phone, or job info is found, return empty arrays. No extraction for purely social "chit-chat".
+6. **Data Formatting**:
+   - Emails: ALWAYS lowercase.
+   - Phones: REMOVE "+" and formatting. Digits only.
+   - city: Use "contactLocation" from JSON as the city.
+7. **Leveraging NER Entities**: The input JSON includes pre-extracted \`ner_entities\` (emails, phones, job titles, skills, salaries). Prioritize these entities when filling out fields, but verify against the message context to resolve ambiguities.
 
-The JSON contains LinkedIn contact information with the following fields:
-- contactName: Full name of the contact
-- linkedInUrl: LinkedIn profile URL (normalized)
-- linkedin_internal_id: Internal LinkedIn ID (e.g., ACo...)
-- phone: May contain a phone number OR be null - if null, extract from messages
-- email: May contain an email address OR be null - if null, extract from messages
-- messages: Array of message strings from this contact - search here if email/phone are null
+INPUT JSON FIELDS:
+- contactName: Full name
+- contactHeadline: Professional headline (use to extract company_name and job_title)
+- contactLocation: Location (City/Country)
+- linkedInUrl: LinkedIn profile URL
+- linkedin_internal_id: Internal ID
+- phone: May be null
+- email: May be null
+- messages: Array of message strings from this contact.
+- ner_entities: Pre-extracted entities (emails, phones, urls, job_titles, organizations, skills, salaries, location)
 
-EXTRACTION RULES (only if email/phone are null):
-1. Extract email addresses from the messages array. Look for patterns like: email@domain.com, contact me at email@example.com, etc.
-2. Extract phone numbers from the messages array. Look for patterns like: +1234567890, (123) 456-7890, 123-456-7890, etc.
-3. Normalize extracted data:
-   - Normalize emails to lowercase
-   - Normalize phone numbers: REMOVE the "+" sign if present, keep only digits (e.g., "+1234567890" becomes "1234567890")
-   - Use the first valid email/phone if multiple found
 
-The target table is: vendor_contact_extracts
-Table columns (INCLUDE ALL OF THESE IN YOUR SQL):
-- full_name (VARCHAR) - map from contactName
-- source_email (VARCHAR, can be NULL) - ALWAYS set to NULL
-- email (VARCHAR, can be NULL) - USE email field from JSON OR extract from messages - THIS FIELD MUST BE IN SQL
-- phone (VARCHAR, can be NULL) - USE phone field from JSON OR extract from messages - THIS FIELD MUST BE IN SQL
-- linkedin_id (VARCHAR) - map from linkedInUrl
-- company_name (VARCHAR, can be NULL) - ALWAYS set to NULL
-- location (VARCHAR, can be NULL) - ALWAYS set to NULL
-- extraction_date (DATE) - use CURRENT_DATE()
-- moved_to_vendor (INT, default 0) - ALWAYS set to 0
-- created_at (DATETIME, can be NULL) - ALWAYS set to NULL
-- linkedin_internal_id (VARCHAR) - map from linkedin_internal_id
-
-CRITICAL SQL REQUIREMENTS:
-1. Generate MySQL UPSERT using: INSERT INTO vendor_contact_extracts (...) VALUES (...) ON DUPLICATE KEY UPDATE ...
-2. The duplicate key is on linkedin_id
-3. Include email and phone columns in BOTH the INSERT column list AND the VALUES clause
-4. Include email and phone in the ON DUPLICATE KEY UPDATE clause
-5. Only include records where linkedInUrl is not empty
-6. For email: Use the value from JSON email field, or extract from messages, or use NULL
-7. For phone: Use the value from JSON phone field, or extract from messages, or use NULL
-8. Use proper SQL escaping: Replace single quotes with two single quotes ('')
-9. Set NULL explicitly as NULL (not as string 'NULL')
-
-PHONE NUMBER FORMATTING:
-- If phone number contains "+" sign, REMOVE it before inserting into SQL
-- Example: "+1234567890" should become "1234567890" in the SQL
-- Keep only digits, no special characters or "+" prefix
-
-EXAMPLE SQL STRUCTURE (follow this format exactly):
-INSERT INTO vendor_contact_extracts
-  (full_name, source_email, email, phone, linkedin_id, company_name, location, extraction_date, moved_to_vendor, created_at, linkedin_internal_id)
-VALUES
-('John Doe', NULL, 'john@example.com', '1234567890', 'https://linkedin.com/in/xyz', NULL, NULL, CURRENT_DATE(), 0, NULL, 'ACo123'),
-('Jane Smith', NULL, NULL, NULL, 'https://linkedin.com/in/abc', NULL, NULL, CURRENT_DATE(), 0, NULL, 'ACo456')
-AS new
-ON DUPLICATE KEY UPDATE
-  full_name = new.full_name,
-  email = new.email,
-  phone = new.phone,
-  linkedin_id = new.linkedin_id,
-  linkedin_internal_id = new.linkedin_internal_id,
-  extraction_date = new.extraction_date;
-
-Return ONLY the SQL code, no explanations, no markdown formatting, no code blocks. Just pure SQL.
+REQUIRED OUTPUT FORMAT (Return ONLY valid JSON, no markdown, no code blocks):
+{
+  "contacts": [
+    {
+      "full_name": "string",
+      "email": "string or null",
+      "phone": "string (digits only) or null",
+      "company_name": "string or null",
+      "job_title": "string or null",
+      "city": "string or null",
+      "linkedin_id": "string (linkedInUrl)",
+      "linkedin_internal_id": "string",
+      "source_type": "bot_linkedin_message_extraction",
+      "raw_payload": {}
+    }
+  ],
+  "positions": [
+    {
+      "source": "bot_linkedin_message_extraction",
+      "source_uid": "string (linkedin_internal_id)",
+      "title": "string (job title)",
+      "company": "string (company name)",
+      "location": "string (job location)",
+      "description": "string (full job description from message)",
+      "contact_info": "string - MUST be formatted EXACTLY as: 'Email: <email or empty>, Phone: <phone or empty>, apply_url: <url or empty>'",
+      "notes": "string (any extra info such as salary, stack, etc.)",
+      "payload": {}
+    }
+  ]
+}
 
 JSON Data:
 ${JSON.stringify(jsonData, null, 2)}`;
@@ -164,26 +150,39 @@ ${JSON.stringify(jsonData, null, 2)}`;
   }
 }
 
-// Validates if SQL string contains basic UPSERT syntax
-function validateSQL(sql) {
-  if (!sql || typeof sql !== "string") {
-    console.log("SQL validation failed: not a string or empty");
-    return false;
+// Validates and parses LLM output as JSON with contacts and positions arrays
+function validateAndParseJSON(rawText) {
+  if (!rawText || typeof rawText !== "string") {
+    console.log("JSON validation failed: not a string or empty");
+    return null;
   }
-  const trimmed = sql.trim().toUpperCase();
-  const hasInsert = trimmed.includes("INSERT");
-  const hasUpsert = trimmed.includes("ON DUPLICATE KEY UPDATE");
-  const hasValues = trimmed.includes("VALUES");
-  
-  if (!hasInsert) {
-    console.log("SQL validation failed: missing INSERT");
-    return false;
+
+  let cleaned = rawText.trim();
+
+  // Strip markdown code blocks if present
+  if (cleaned.includes("```")) {
+    const matches = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (matches && matches[1]) {
+      cleaned = matches[1].trim();
+    } else {
+      cleaned = cleaned.replace(/```/g, '').trim();
+    }
   }
-  if (!hasUpsert && !hasValues) {
-    console.log("SQL validation failed: missing ON DUPLICATE KEY UPDATE or VALUES");
-    return false;
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (parsed && typeof parsed === "object") {
+      // Ensure both arrays exist
+      if (!Array.isArray(parsed.contacts)) parsed.contacts = [];
+      if (!Array.isArray(parsed.positions)) parsed.positions = [];
+      return parsed;
+    }
+    console.log("JSON validation failed: not an object");
+    return null;
+  } catch (err) {
+    console.log("JSON parse error:", err.message, "preview:", cleaned.substring(0, 200));
+    return null;
   }
-  return true;
 }
 
 // Checks if API key timestamp has exceeded 30 minute expiration
@@ -194,11 +193,158 @@ function isApiKeyExpired(savedTimestamp) {
   return (now - savedTimestamp) > thirtyMinutes;
 }
 
+// Checks if a JWT token is expired by decoding its payload
+function isTokenExpired(token) {
+  if (!token) return true;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1]));
+    if (!payload.exp) return true;
+    // Add 30 second buffer to prevent edge cases
+    return (payload.exp * 1000) < (Date.now() + 30000);
+  } catch {
+    return true;
+  }
+}
+
+// Authenticates with WBL API and returns access token
+async function wblLogin(apiUrl, email, password) {
+  const loginUrl = `${apiUrl.replace(/\/$/, '')}/login`;
+  const response = await fetch(loginUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  });
+
+  if (!response.ok) {
+    let errorMsg = `Login failed: ${response.status}`;
+    try {
+      const errData = await response.json();
+      errorMsg = errData.message || errData.detail || errorMsg;
+    } catch {}
+    throw new Error(errorMsg);
+  }
+
+  const data = await response.json();
+  if (!data.access_token) {
+    throw new Error("Login response missing access_token");
+  }
+  return data.access_token;
+}
+
+// Gets a valid WBL token, auto-refreshing if expired
+async function getValidToken(wblConfig) {
+  const { wblApiUrl, wblEmail, wblPassword } = wblConfig;
+
+  // Check if we have a cached token that's still valid
+  const stored = await chrome.storage.local.get(["wblToken"]);
+  if (stored.wblToken && !isTokenExpired(stored.wblToken)) {
+    console.log("Using cached WBL token");
+    return stored.wblToken;
+  }
+
+  // Token expired or missing, login again
+  console.log("WBL token expired or missing, logging in...");
+  const newToken = await wblLogin(wblApiUrl, wblEmail, wblPassword);
+  await chrome.storage.local.set({ wblToken: newToken });
+  return newToken;
+}
+
+// Makes an authenticated API call with auto token refresh on 401
+async function authenticatedFetch(url, options, wblConfig) {
+  let token = await getValidToken(wblConfig);
+
+  options.headers = {
+    ...options.headers,
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`
+  };
+
+  let response = await fetch(url, options);
+
+  // If 401, refresh token and retry once
+  if (response.status === 401) {
+    console.log("Got 401, refreshing token...");
+    await chrome.storage.local.remove(["wblToken"]);
+    token = await getValidToken(wblConfig);
+    options.headers["Authorization"] = `Bearer ${token}`;
+    response = await fetch(url, options);
+  }
+
+  return response;
+}
+
+// Syncs extracted data to WBL API (contacts + positions)
+async function syncToWBL(extractedData, wblConfig) {
+  const baseUrl = wblConfig.wblApiUrl.replace(/\/$/, '');
+  const results = { contacts: null, positions: null };
+
+  // Step 1: Sync contacts
+  if (extractedData.contacts && extractedData.contacts.length > 0) {
+    // Attach raw_payload and source_type to each contact
+    const contacts = extractedData.contacts.map(c => ({
+      ...c,
+      source_type: c.source_type || "bot_linkedin_message_extraction",
+      raw_payload: c.raw_payload || null
+    }));
+
+    console.log(`Syncing ${contacts.length} contacts to WBL...`);
+    const contactRes = await authenticatedFetch(
+      `${baseUrl}/automation-extracts/bulk`,
+      {
+        method: "POST",
+        body: JSON.stringify({ extracts: contacts })
+      },
+      wblConfig
+    );
+
+    if (!contactRes.ok) {
+      const errText = await contactRes.text();
+      throw new Error(`Contact sync failed (${contactRes.status}): ${errText}`);
+    }
+    results.contacts = await contactRes.json();
+    console.log("Contact sync result:", results.contacts);
+  }
+
+  // Step 2: Sync positions
+  if (extractedData.positions && extractedData.positions.length > 0) {
+    // Attach source to each position
+    const positions = extractedData.positions.map(p => ({
+      ...p,
+      source: p.source || "bot_linkedin_message_extraction",
+      payload: p.payload || null
+    }));
+
+    console.log(`Syncing ${positions.length} positions to WBL...`);
+    const posRes = await authenticatedFetch(
+      `${baseUrl}/email-positions/bulk`,
+      {
+        method: "POST",
+        body: JSON.stringify({ positions: positions })
+      },
+      wblConfig
+    );
+
+    if (!posRes.ok) {
+      const errText = await posRes.text();
+      throw new Error(`Position sync failed (${posRes.status}): ${errText}`);
+    }
+    results.positions = await posRes.json();
+    console.log("Position sync result:", results.positions);
+  }
+
+  return results;
+}
+
 // Main message listener for extension communication
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Injects content script into LinkedIn messaging tab
   if (message.action === "run_extractor") {
     (async () => {
+      // Save the limit to local storage so the content script can read it
+      await chrome.storage.local.set({ extractLimit: message.limit || 20 });
+      
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab && tab.url.includes("linkedin.com/messaging")) {
         await chrome.scripting.executeScript({
@@ -214,7 +360,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Handles LLM API call request with retry logic and SQL validation
+  // Handles LLM API call request with retry logic and JSON validation
   if (message.action === "call_llm") {
     (async () => {
       try {
@@ -232,58 +378,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
-        let sqlResult = null;
+        let jsonResult = null;
         let retryCount = 0;
         const maxRetries = 2;
 
-        while (retryCount <= maxRetries && !sqlResult) {
+        while (retryCount <= maxRetries && !jsonResult) {
           try {
-            const sql = await callLLMAPI(message.jsonData, config);
-            console.log("LLM returned SQL, length:", sql?.length);
+            const rawOutput = await callLLMAPI(message.jsonData, config);
+            console.log("LLM returned output, length:", rawOutput?.length);
 
-            if (validateSQL(sql)) {
-              let cleanSQL = sql;
-              if (cleanSQL.includes("```")) {
-                const matches = cleanSQL.match(/```(?:sql)?\s*([\s\S]*?)```/);
-                if (matches && matches[1]) {
-                  cleanSQL = matches[1].trim();
-                } else {
-                  cleanSQL = cleanSQL.replace(/```/g, '').trim();
-                }
-              }
-              sqlResult = cleanSQL;
-              console.log("SQL validation passed, using LLM SQL");
+            const parsed = validateAndParseJSON(rawOutput);
+            if (parsed) {
+              jsonResult = parsed;
+              console.log("JSON validation passed. Contacts:", parsed.contacts.length, "Positions:", parsed.positions.length);
             } else {
-              console.log("SQL validation failed, attempting fix. SQL preview:", sql?.substring(0, 200));
+              console.log("JSON validation failed, attempting fix...");
               if (retryCount < maxRetries) {
-                const validationPrompt = `The following SQL is invalid or incomplete. Please fix it and return ONLY valid MySQL UPSERT syntax with INSERT ... ON DUPLICATE KEY UPDATE. No explanations, just the SQL code.\n\nInvalid SQL:\n${sql}`;
-                const fixedSQL = await callLLMAPI(null, config, validationPrompt);
-                if (validateSQL(fixedSQL)) {
-                  let cleanSQL = fixedSQL;
-                  if (cleanSQL.includes("```")) {
-                    const matches = cleanSQL.match(/```(?:sql)?\s*([\s\S]*?)```/);
-                    if (matches && matches[1]) {
-                      cleanSQL = matches[1].trim();
-                    } else {
-                      cleanSQL = cleanSQL.replace(/```/g, '').trim();
-                    }
-                  }
-                  sqlResult = cleanSQL;
-                  console.log("Fixed SQL validation passed");
+                const fixPrompt = `The following output is not valid JSON. Please fix it and return ONLY a valid JSON object with "contacts" and "positions" arrays. No explanations, just JSON.\n\nInvalid output:\n${rawOutput}`;
+                const fixedOutput = await callLLMAPI(null, config, fixPrompt);
+                const fixedParsed = validateAndParseJSON(fixedOutput);
+                if (fixedParsed) {
+                  jsonResult = fixedParsed;
+                  console.log("Fixed JSON validation passed");
                 } else {
-                  console.log("Fixed SQL still failed validation");
                   retryCount++;
                   if (retryCount <= maxRetries) {
                     await new Promise(resolve => setTimeout(resolve, 2000));
                   }
                 }
               } else {
-                console.log("Max retries reached, SQL validation failed");
                 retryCount++;
               }
             }
 
-            if (!sqlResult && retryCount <= maxRetries) {
+            if (!jsonResult && retryCount <= maxRetries) {
               await new Promise(resolve => setTimeout(resolve, 2000));
             }
           } catch (error) {
@@ -297,58 +425,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         }
 
-        if (!sqlResult) {
-          sendResponse({ success: false, error: "LLM generated SQL but validation failed after all retries. The SQL may not contain required INSERT and ON DUPLICATE KEY UPDATE syntax." });
+        if (!jsonResult) {
+          sendResponse({ success: false, error: "LLM output was not valid JSON after all retries." });
           return;
         }
 
-        console.log("Sending SQL response to content script, length:", sqlResult.length);
-        try {
-          sendResponse({ success: true, sql: sqlResult });
-          console.log("Response sent via sendResponse");
-          
-          setTimeout(() => {
-            chrome.runtime.sendMessage({
-              from: "background",
-              action: "llm_response",
-              success: true,
-              sql: sqlResult
-            }).catch(err => {
-              if (err.message !== "Could not establish connection. Receiving end does not exist.") {
-                console.error("Failed to send alternative response:", err);
-              }
-            });
-          }, 100);
-        } catch (err) {
-          console.error("Error in sendResponse, using alternative method:", err);
-          chrome.runtime.sendMessage({
-            from: "background",
-            action: "llm_response",
-            success: true,
-            sql: sqlResult
-          }).catch(console.error);
-        }
+        sendResponse({ success: true, data: jsonResult });
       } catch (error) {
         console.error("Error in LLM handler:", error);
-        try {
-          sendResponse({ success: false, error: error.message });
-          setTimeout(() => {
-            chrome.runtime.sendMessage({
-              from: "background",
-              action: "llm_response",
-              success: false,
-              error: error.message
-            }).catch(console.error);
-          }, 100);
-        } catch (err) {
-          console.error("Error sending error response:", err);
-          chrome.runtime.sendMessage({
-            from: "background",
-            action: "llm_response",
-            success: false,
-            error: error.message
-          }).catch(console.error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Handles syncing extracted data to WBL API
+  if (message.action === "sync_to_wbl") {
+    (async () => {
+      try {
+        const wblConfig = await chrome.storage.sync.get([
+          "wblApiUrl", "wblEmail", "wblPassword", "wblEmployeeId", "wblJobId"
+        ]);
+
+        if (!wblConfig.wblApiUrl || !wblConfig.wblEmail || !wblConfig.wblPassword) {
+          sendResponse({ success: false, error: "WBL configuration is incomplete. Please configure in popup." });
+          return;
         }
+
+        const results = await syncToWBL(message.data, wblConfig);
+        sendResponse({ success: true, results: results });
+      } catch (error) {
+        console.error("WBL sync error:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  // Handles WBL login test verification
+  if (message.action === "test_wbl_login") {
+    (async () => {
+      try {
+        const { wblApiUrl, wblEmail, wblPassword } = message.config;
+        const token = await wblLogin(wblApiUrl, wblEmail, wblPassword);
+        // Cache the token for future use
+        await chrome.storage.local.set({ wblToken: token });
+        sendResponse({ success: true, data: { message: "Login successful" } });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message });
       }
     })();
     return true;

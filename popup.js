@@ -1,5 +1,6 @@
 document.addEventListener("DOMContentLoaded", () => {
   const button = document.getElementById("extractBtn");
+  const extractLimit = document.getElementById("extractLimit");
   const statusBox = document.getElementById("status");
   const configToggle = document.getElementById("configToggle");
   const configContent = document.getElementById("configContent");
@@ -10,6 +11,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const modelName = document.getElementById("modelName");
   const saveConfigBtn = document.getElementById("saveConfigBtn");
   const configStatus = document.getElementById("configStatus");
+  
+  // WBL Elements
+  const wblToggle = document.getElementById("wblToggle");
+  const wblContent = document.getElementById("wblContent");
+  const wblArrow = document.getElementById("wblArrow");
+  const wblApiUrl = document.getElementById("wblApiUrl");
+  const wblEmail = document.getElementById("wblEmail");
+  const wblPassword = document.getElementById("wblPassword");
+  const wblEmployeeId = document.getElementById("wblEmployeeId");
+  const wblJobId = document.getElementById("wblJobId");
+  const saveWblBtn = document.getElementById("saveWblBtn");
+  const testWblBtn = document.getElementById("testWblBtn");
+  const syncWblBtn = document.getElementById("syncWblBtn");
+  const wblStatus = document.getElementById("wblStatus");
 
   const defaultEndpoints = {
     groq: "https://api.groq.com/openai/v1/chat/completions",
@@ -81,6 +96,11 @@ document.addEventListener("DOMContentLoaded", () => {
   configToggle.addEventListener("click", () => {
     configContent.classList.toggle("active");
     configArrow.textContent = configContent.classList.contains("active") ? "▲" : "▼";
+  });
+
+  wblToggle.addEventListener("click", () => {
+    wblContent.classList.toggle("active");
+    wblArrow.textContent = wblContent.classList.contains("active") ? "▲" : "▼";
   });
 
   // Populates model dropdown with provider-specific models
@@ -161,6 +181,10 @@ document.addEventListener("DOMContentLoaded", () => {
         if (result.llmApiEndpoint) {
           apiEndpoint.value = result.llmApiEndpoint;
         }
+
+        if (result.extractLimit) {
+          extractLimit.value = result.extractLimit;
+        }
         
         updateModelDropdown();
         
@@ -174,6 +198,21 @@ document.addEventListener("DOMContentLoaded", () => {
           modelName.value = defaultModels[result.llmApiProvider] || availableModels[result.llmApiProvider]?.[0]?.value || "";
         }
       }
+
+      const wblResult = await chrome.storage.sync.get([
+        "wblApiUrl",
+        "wblEmail",
+        "wblPassword",
+        "wblEmployeeId",
+        "wblJobId"
+      ]);
+
+      if (wblResult.wblApiUrl) wblApiUrl.value = wblResult.wblApiUrl;
+      if (wblResult.wblEmail) wblEmail.value = wblResult.wblEmail;
+      if (wblResult.wblPassword) wblPassword.value = wblResult.wblPassword;
+      if (wblResult.wblEmployeeId) wblEmployeeId.value = wblResult.wblEmployeeId;
+      if (wblResult.wblJobId) wblJobId.value = wblResult.wblJobId;
+
     } catch (err) {
       console.error("Error loading config:", err);
       apiProvider.value = "groq";
@@ -207,6 +246,7 @@ document.addEventListener("DOMContentLoaded", () => {
       llmApiKey: apiKey.value,
       llmApiEndpoint: apiEndpoint.value,
       llmModelName: modelName.value,
+      extractLimit: parseInt(extractLimit.value) || 20,
       llmApiKeyTimestamp: Date.now()
     };
 
@@ -231,6 +271,93 @@ document.addEventListener("DOMContentLoaded", () => {
       configStatus.className = "config-status";
       console.error("Error saving config:", err);
     }
+  });
+
+  saveWblBtn.addEventListener("click", async () => {
+    const config = {
+      wblApiUrl: wblApiUrl.value,
+      wblEmail: wblEmail.value,
+      wblPassword: wblPassword.value,
+      wblEmployeeId: wblEmployeeId.value,
+      wblJobId: wblJobId.value
+    };
+
+    if (!config.wblApiUrl || !config.wblEmail || !config.wblPassword) {
+      wblStatus.textContent = "❌ Please fill required fields";
+      wblStatus.className = "config-status";
+      setTimeout(() => {
+        wblStatus.textContent = "";
+      }, 3000);
+      return;
+    }
+
+    try {
+      await chrome.storage.sync.set(config);
+      wblStatus.textContent = "✅ WBL settings saved!";
+      wblStatus.className = "config-status saved";
+      setTimeout(() => {
+        wblStatus.textContent = "";
+      }, 5000);
+    } catch (err) {
+      wblStatus.textContent = "❌ Error saving WBL settings";
+      wblStatus.className = "config-status";
+      console.error("Error saving WBL config:", err);
+    }
+  });
+
+  testWblBtn.addEventListener("click", async () => {
+    const config = {
+      wblApiUrl: wblApiUrl.value,
+      wblEmail: wblEmail.value,
+      wblPassword: wblPassword.value,
+      wblEmployeeId: wblEmployeeId.value,
+      wblJobId: wblJobId.value
+    };
+
+    if (!config.wblApiUrl || !config.wblEmail || !config.wblPassword) {
+      wblStatus.textContent = "❌ Please fill required fields";
+      wblStatus.className = "config-status";
+      return;
+    }
+
+    wblStatus.textContent = "⏳ Testing connection...";
+    wblStatus.className = "config-status";
+
+    chrome.runtime.sendMessage({
+      action: "test_wbl_login",
+      config: config
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        wblStatus.textContent = "❌ Error: " + chrome.runtime.lastError.message;
+        wblStatus.className = "config-status";
+        return;
+      }
+      if (response && response.success) {
+        wblStatus.textContent = "✅ Login successful!";
+        wblStatus.className = "config-status saved";
+      } else {
+        wblStatus.textContent = "❌ Login failed: " + (response?.error || "Unknown error");
+        wblStatus.className = "config-status";
+      }
+    });
+  });
+
+  syncWblBtn.addEventListener("click", async () => {
+    wblStatus.textContent = "⏳ Starting sync...";
+    wblStatus.className = "config-status";
+
+    const limit = parseInt(extractLimit.value) || 20;
+
+    // Trigger extraction and sync on current LinkedIn tab
+    chrome.runtime.sendMessage({ action: "run_extractor", limit: limit }, (response) => {
+      if (chrome.runtime.lastError) {
+        wblStatus.textContent = "❌ Error: " + chrome.runtime.lastError.message;
+        wblStatus.className = "config-status";
+        return;
+      }
+      wblStatus.textContent = "🔄 Extractor launched. Check status above.";
+      wblStatus.className = "config-status saved";
+    });
   });
 
   // Initializes default Groq values on first load
@@ -270,6 +397,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Triggers extraction when extract button is clicked
   button.addEventListener("click", async () => {
     updateStatus("Running extractor on current page...", "processing", true);
-    chrome.runtime.sendMessage({ action: "run_extractor" });
+    const limit = parseInt(extractLimit.value) || 20;
+    chrome.runtime.sendMessage({ action: "run_extractor", limit: limit });
   });
 });

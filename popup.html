@@ -231,6 +231,11 @@
     <h3>IP LinkedIn Message Extractor</h3>
   </div>
 
+  <div class="config-group" style="text-align: left; margin-bottom: 10px;">
+    <label for="extractLimit" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px;">How many chats to process?</label>
+    <input type="number" id="extractLimit" value="20" min="1" style="width: 100%; padding: 8px; border-radius: 8px; border: none; box-sizing: border-box; background: rgba(255,255,255,0.9); color: #333;" placeholder="e.g. 20">
+  </div>
+
   <button id="extractBtn">Extract Messages</button>
   <div id="status">Status: Idle</div>
 
@@ -265,6 +270,39 @@
         </div>
       <button class="save-config-btn" id="saveConfigBtn">Save Configuration</button>
       <div id="configStatus" class="config-status"></div>
+    </div>
+  </div>
+
+  <div class="config-panel">
+    <div class="config-toggle" id="wblToggle">
+      <span>🌐 WBL Configuration</span>
+      <span id="wblArrow">▼</span>
+    </div>
+    <div class="config-content" id="wblContent">
+      <div class="config-group">
+        <label for="wblApiUrl">WBL API URL:</label>
+        <input type="text" id="wblApiUrl" placeholder="https://api.whitebox-learning.com/api">
+      </div>
+      <div class="config-group">
+        <label for="wblEmail">WBL Email:</label>
+        <input type="email" id="wblEmail" placeholder="Enter WBL email">
+      </div>
+      <div class="config-group">
+        <label for="wblPassword">WBL Password:</label>
+        <input type="password" id="wblPassword" placeholder="Enter WBL password">
+      </div>
+      <div class="config-group">
+        <label for="wblEmployeeId">Employee ID:</label>
+        <input type="text" id="wblEmployeeId" placeholder="e.g., 351">
+      </div>
+      <div class="config-group">
+        <label for="wblJobId">Extraction Job ID:</label>
+        <input type="text" id="wblJobId" placeholder="e.g., 120">
+      </div>
+      <button class="save-config-btn" id="saveWblBtn" style="margin-bottom: 5px;">Save WBL Settings</button>
+      <button class="save-config-btn" id="testWblBtn" style="margin-bottom: 5px;">Test WBL Connection</button>
+      <button class="save-config-btn" id="syncWblBtn" style="background: rgba(0, 200, 83, 0.3); border-color: rgba(0, 200, 83, 0.5);">🔄 Sync to WBL</button>
+      <div id="wblStatus" class="config-status"></div>
     </div>
   </div>
 

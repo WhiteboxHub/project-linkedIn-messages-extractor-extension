@@ -1,6 +1,103 @@
 (async () => {
-  const PHONE_RE = /(\+?\d[\d\-\.\s\(\)]{6,}\d)/g;
-  const EMAIL_RE = /([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)/g;
+  // ─── NER Engine ───────────────────────────────────────────────────────────────
+  const NER_EMAIL_RE = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g;
+  const NER_PHONE_RE = /(?:\+?\d{1,4}[-.\s]?)?(?:\(?\d{2,5}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{3,5}(?:\s?(?:ext|x|ext\.)\s?\d{1,5})?/g;
+  const NER_URL_RE = /https?:\/\/[^\s"'<>)\]]+/g;
+  const NER_SALARY_RE = /\$\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?\s*(?:[-–to]+\s*\$?\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?)?(?:\s*\/\s*(?:year|yr|annum|month|hr|hour))?/g;
+  const NER_TITLE_RE = /\b(?:Senior|Sr\.?|Junior|Jr\.?|Lead|Principal|Staff|Associate|Mid(?:-level)?|Entry[-\s]level)?\s*(?:Software|Frontend|Back[-\s]?end|Full[-\s]?Stack|Mobile|iOS|Android|DevOps|MLOps|Cloud|Data|Platform|Site Reliability|Security|QA|Test|Product|Project|Program|Embedded|Network|AI|ML|Machine Learning|NLP|GenAI|UI\/UX|UX|UI|Graphic|Systems|Infrastructure|Solutions|Technical|Sales|Recruiting|Talent)\s+(?:Engineer|Developer|Architect|Manager|Lead|Director|Analyst|Designer|Consultant|Recruiter|Specialist|Associate|Coordinator|Researcher|Scientist)(?:\s+(?:I{1,3}|IV|V|1|2|3|4))?\b/gi;
+  const NER_ORG_RE = /(?:at|@|with|from|joins?|joined?)\s+([A-Z][A-Za-z0-9&'\-\s]{1,30}(?:Inc\.?|LLC\.?|Ltd\.?|Corp\.?|Co\.?|Agency|Group|Solutions|Tech|Labs?|Systems|Services|Consulting|Digital|Global)?)(?=[.,:;!?]|\s|$)/g;
+  const NER_SKILL_RE = /\b(?:React(?:\.js)?|Vue(?:\.js)?|Angular(?:\.js)?|Node(?:\.js)?|Next(?:\.js)?|TypeScript|JavaScript|Python|Java|Kotlin|Swift|Golang|Rust|C\+\+|C#|\.NET|PHP|Ruby|Django|FastAPI|Flask|Spring(?:\s+Boot)?|PostgreSQL|MySQL|MongoDB|Redis|Elasticsearch|Kafka|AWS|GCP|Azure|Docker|Kubernetes|Terraform|Ansible|Jenkins|CI\/CD|GraphQL|REST(?:ful)?|gRPC|Microservices?|TensorFlow|PyTorch|Pandas|NumPy|Spark|Hadoop|dbt|Snowflake|BigQuery)\b/gi;
+
+  const GENERIC_EMAIL_PREFIXES = [
+    'support', 'info', 'donotreply', 'noreply', 'admin', 'hr', 'no-reply',
+    'hello', 'contact', 'office', 'sales', 'billing', 'jobs', 'careers',
+    'notifications', 'newsletter', 'team', 'mailer', 'bounce', 'postmaster'
+  ];
+
+  function isGenericEmail(email) {
+    const prefix = email.split('@')[0].toLowerCase();
+    return GENERIC_EMAIL_PREFIXES.some(b => prefix === b || prefix.startsWith(b + '.'));
+  }
+
+  function nerDedupe(arr) {
+    return [...new Set(arr.map(s => s.trim()).filter(Boolean))];
+  }
+
+  function nerMatches(text, regex) {
+    const re = new RegExp(regex.source, regex.flags);
+    const results = [];
+    let m;
+    while ((m = re.exec(text)) !== null) results.push(m[0].trim());
+    return results;
+  }
+
+  function nerGroup1(text, regex) {
+    const re = new RegExp(regex.source, regex.flags);
+    const results = [];
+    let m;
+    while ((m = re.exec(text)) !== null) if (m[1]) results.push(m[1].trim());
+    return results;
+  }
+
+  function cleanPhone(raw) {
+    const d = raw.replace(/\D/g, '');
+    return (d.length >= 10 && d.length <= 15) ? d : null;
+  }
+
+  /**
+   * Extracts named entities from messages + headline.
+   * Returns rich entity object for LLM hint injection.
+   */
+  function extractEntities(messages, headline = '', location = '') {
+    const fullText = [...messages, headline].filter(Boolean).join(' ');
+
+    const allEmails = nerMatches(fullText, NER_EMAIL_RE).map(e => e.toLowerCase());
+    const personalEmails = nerDedupe(allEmails.filter(e => !isGenericEmail(e)));
+    const genericEmails = nerDedupe(allEmails.filter(isGenericEmail));
+
+    const phones = nerDedupe(nerMatches(fullText, NER_PHONE_RE).map(cleanPhone).filter(Boolean));
+    const allUrls = nerDedupe(nerMatches(fullText, NER_URL_RE));
+    const applyUrls = allUrls.filter(url =>
+      /apply|job|career|position|opening|role|hiring|recruit|lever\.co|greenhouse\.io|ashbyhq|workable|breezy|smartrecruiters|icims|taleo|workday|bamboo/i.test(url)
+    );
+    const jobTitles = nerDedupe(nerMatches(fullText, NER_TITLE_RE));
+    const orgs = nerDedupe(nerGroup1(fullText, NER_ORG_RE));
+    const skills = nerDedupe(nerMatches(fullText, NER_SKILL_RE));
+    const salaries = nerDedupe(nerMatches(fullText, NER_SALARY_RE));
+
+    return {
+      emails: { personal: personalEmails, generic: genericEmails },
+      phones,
+      urls: { apply: applyUrls, all: allUrls },
+      job_titles: jobTitles,
+      organizations: orgs,
+      skills,
+      salaries,
+      location: location || null,
+      has_personal_email: personalEmails.length > 0,
+      has_phone: phones.length > 0,
+      has_apply_url: applyUrls.length > 0,
+      has_job_title: jobTitles.length > 0
+    };
+  }
+
+  // Legacy single-match helpers (used elsewhere in this file)
+  function extractFirstEmailFromMessages(messages) {
+    for (const msg of messages) {
+      const m = nerMatches(msg, NER_EMAIL_RE);
+      const personal = m.filter(e => !isGenericEmail(e.toLowerCase()));
+      if (personal.length > 0) return personal[0].toLowerCase();
+    }
+    return null;
+  }
+
+  function extractFirstPhoneFromMessages(messages) {
+    for (const msg of messages) {
+      const phones = nerMatches(msg, NER_PHONE_RE).map(cleanPhone).filter(Boolean);
+      if (phones.length > 0) return phones[0];
+    }
+    return null;
+  }
 
   // Sends status update message to popup via background script
   function sendUpdate(type, text) {
@@ -59,12 +156,20 @@
     return null;
   }
 
-  // Extracts the first valid email address from message array
+  // Extracts the first valid email address from message array, filtering out generic ones
   function extractFirstEmailFromMessages(messages) {
     if (!messages || !messages.length) return null;
     for (const msg of messages) {
       const m = msg.match(EMAIL_RE);
-      if (m && m.length) return m[0].trim();
+      if (m && m.length) {
+        for (const email of m) {
+          const lower = email.trim().toLowerCase();
+          const prefix = lower.split('@')[0];
+          if (!GENERIC_EMAIL_PREFIXES.some(p => prefix === p || prefix.startsWith(p + '-'))) {
+            return lower;
+          }
+        }
+      }
     }
     return null;
   }
@@ -121,16 +226,15 @@
     return String(id).trim().toLowerCase();
   }
 
-  // Merges and deduplicates contact records using email-priority algorithm
+  // Merges and deduplicates contact records using a robust identifier-priority algorithm
   function mergeAndDedupe(rows) {
     const mapByEmail = new Map();
     const mapByInternal = new Map();
     const mapByLinkedIn = new Map();
     const mapByPhone = new Map();
-    const mapByName = new Map();
+    const mapByNameUrl = new Map(); // Combined Name + URL for safer common name handling
     const merged = [];
 
-    // Registers all keys for an item in the mapping indexes
     function registerMaps(item, idx) {
       const e = normalizeEmailForKey(item.email);
       const i = normalizeInternalIdForKey(item.linkedin_internal_id);
@@ -142,10 +246,9 @@
       if (i) mapByInternal.set(i, idx);
       if (l) mapByLinkedIn.set(l, idx);
       if (p) mapByPhone.set(p, idx);
-      if (n) mapByName.set(n, idx);
+      if (n && l) mapByNameUrl.set(n + '|' + l, idx);
     }
 
-    // Finds existing record index by matching keys
     function findExistingIndex(item) {
       const e = normalizeEmailForKey(item.email);
       const i = normalizeInternalIdForKey(item.linkedin_internal_id);
@@ -154,10 +257,10 @@
       const n = normalizeNameForKey(item.contactName);
 
       if (e && mapByEmail.has(e)) return mapByEmail.get(e);
-      if (i && mapByInternal.has(i)) return mapByInternal.get(i);
-      if (l && mapByLinkedIn.has(l)) return mapByLinkedIn.get(l);
+      if (i && i !== '' && mapByInternal.has(i)) return mapByInternal.get(i);
+      if (l && l !== '' && mapByLinkedIn.has(l)) return mapByLinkedIn.get(l);
       if (p && mapByPhone.has(p)) return mapByPhone.get(p);
-      if (n && mapByName.has(n)) return mapByName.get(n);
+      if (n && l && mapByNameUrl.has(n + '|' + l)) return mapByNameUrl.get(n + '|' + l);
       return -1;
     }
 
@@ -166,6 +269,8 @@
       if (idx === -1) {
         const copy = {
           contactName: row.contactName || '',
+          contactHeadline: row.contactHeadline || '',
+          contactLocation: row.contactLocation || '',
           linkedInUrl: row.linkedInUrl || '',
           linkedin_internal_id: row.linkedin_internal_id || '',
           phone: row.phone || null,
@@ -176,39 +281,29 @@
         registerMaps(copy, newIdx);
       } else {
         const existing = merged[idx];
-        const existingHasEmail = existing.email && String(existing.email).trim() !== '';
         const incomingHasEmail = row.email && String(row.email).trim() !== '';
 
-        if (incomingHasEmail && !existingHasEmail) {
-          const mergedObj = {
-            contactName: existing.contactName || row.contactName || '',
-            linkedInUrl: existing.linkedInUrl || row.linkedInUrl || '',
-            linkedin_internal_id: existing.linkedin_internal_id || row.linkedin_internal_id || '',
-            phone: existing.phone || row.phone || null,
-            email: row.email || existing.email || null,
-            messages: Array.from(new Set([...(existing.messages || []), ...(row.messages || [])]))
-          };
-          merged[idx] = mergedObj;
-          registerMaps(merged[idx], idx);
-        } else {
-          existing.contactName = existing.contactName || row.contactName || '';
-          existing.linkedInUrl = existing.linkedInUrl || row.linkedInUrl || '';
-          existing.linkedin_internal_id = existing.linkedin_internal_id || row.linkedin_internal_id || '';
-          existing.phone = existing.phone || row.phone || null;
-          existing.email = existing.email || row.email || null;
-          const set = new Set(existing.messages || []);
-          for (const m of (row.messages || [])) set.add(m);
-          existing.messages = Array.from(set);
-          registerMaps(existing, idx);
-        }
+        // Merge fields, preferring non-empty values
+        existing.contactName = existing.contactName || row.contactName || '';
+        existing.contactHeadline = existing.contactHeadline || row.contactHeadline || '';
+        existing.contactLocation = existing.contactLocation || row.contactLocation || '';
+        existing.linkedInUrl = existing.linkedInUrl || row.linkedInUrl || '';
+        existing.linkedin_internal_id = existing.linkedin_internal_id || row.linkedin_internal_id || '';
+        existing.phone = existing.phone || row.phone || null;
+        if (incomingHasEmail) existing.email = row.email;
+        
+        const set = new Set(existing.messages || []);
+        for (const m of (row.messages || [])) set.add(m);
+        existing.messages = Array.from(set);
+        registerMaps(existing, idx);
       }
     }
-
     return merged;
   }
 
-  // Scrolls through conversation list and returns all chat elements
-  async function loadAllContacts() {
+
+  // Scrolls through conversation list and returns all chat elements up to the requested limit
+  async function loadAllContacts(limit) {
     const scrollContainer = document.querySelector('.msg-conversations-container__conversations-list');
     if (!scrollContainer) {
       sendUpdate("error", "Conversation list not found. Open LinkedIn Messaging.");
@@ -216,14 +311,18 @@
     }
     let prevHeight = 0;
     for (let i = 0; i < 40; i++) {
+      const currentChats = document.querySelectorAll('.msg-conversation-listitem__link');
+      if (currentChats.length >= limit) break;
+
       scrollContainer.scrollTo(0, scrollContainer.scrollHeight);
       await delay(1100);
       const newHeight = scrollContainer.scrollHeight;
       if (newHeight === prevHeight) break;
       prevHeight = newHeight;
     }
-    const chats = Array.from(document.querySelectorAll('.msg-conversation-listitem__link'));
-    sendUpdate("progress", `Found ${chats.length} chats`);
+    const allChats = Array.from(document.querySelectorAll('.msg-conversation-listitem__link'));
+    const chats = allChats.slice(0, limit);
+    sendUpdate("progress", `Found ${chats.length} chats (Limited to top ${limit})`);
     return chats;
   }
 
@@ -238,14 +337,14 @@
     URL.revokeObjectURL(url);
   }
 
-  // Generates SQL via LLM API with automatic batching for large datasets
-  async function generateSQLViaLLM(jsonData) {
+  // Extracts structured JSON via LLM API with automatic batching
+  async function extractViaLLM(jsonData) {
     const MAX_BATCH_SIZE = 150000;
     const jsonString = JSON.stringify(jsonData, null, 2);
 
     if (jsonString.length > MAX_BATCH_SIZE) {
       sendUpdate("progress", `JSON too large (${Math.round(jsonString.length / 1024)}KB). Batching...`);
-      return await generateSQLInBatches(jsonData, MAX_BATCH_SIZE);
+      return await extractInBatches(jsonData, MAX_BATCH_SIZE);
     }
 
     return new Promise((resolve, reject) => {
@@ -253,67 +352,31 @@
         reject(new Error("LLM API call timed out after 60 seconds"));
       }, 60000);
 
-      // Listen for response message as fallback
-      const messageListener = (msg) => {
-        if (msg.from === "background" && msg.action === "llm_response") {
-          clearTimeout(timeout);
-          chrome.runtime.onMessage.removeListener(messageListener);
-          console.log("Received LLM response via message listener");
-          if (msg.success && msg.sql) {
-            console.log("Resolving with LLM SQL, length:", msg.sql.length);
-            resolve(msg.sql);
-          } else {
-            console.error("LLM response indicates failure:", msg.error);
-            reject(new Error(msg.error || "LLM failed to generate SQL"));
-          }
-        }
-      };
-      chrome.runtime.onMessage.addListener(messageListener);
-
       try {
-        console.log("Sending LLM request to background script...");
         chrome.runtime.sendMessage({
           action: "call_llm",
           jsonData: jsonData
         }, (response) => {
-          console.log("Callback invoked, response:", response ? "received" : "null");
-          
+          clearTimeout(timeout);
           if (chrome.runtime.lastError) {
-            console.error("Runtime error in callback:", chrome.runtime.lastError.message);
-            if (!response) {
-              clearTimeout(timeout);
-              chrome.runtime.onMessage.removeListener(messageListener);
-              reject(new Error(chrome.runtime.lastError.message));
-            }
+            reject(new Error(chrome.runtime.lastError.message));
             return;
           }
-          if (response) {
-            clearTimeout(timeout);
-            chrome.runtime.onMessage.removeListener(messageListener);
-            console.log("Response received via callback, success:", response.success, "has SQL:", !!response.sql);
-            if (response.success && response.sql) {
-              console.log("Resolving with LLM SQL, length:", response.sql.length);
-              resolve(response.sql);
-            } else {
-              console.error("Response indicates failure:", response.error);
-              reject(new Error(response.error || "LLM failed to generate SQL"));
-            }
+          if (response && response.success && response.data) {
+            resolve(response.data);
           } else {
-            console.log("No response in callback, waiting for message listener...");
+            reject(new Error(response?.error || "LLM failed to extract data"));
           }
         });
-        console.log("Message sent, waiting for response...");
       } catch (err) {
         clearTimeout(timeout);
-        chrome.runtime.onMessage.removeListener(messageListener);
-        console.error("Error sending message:", err);
         reject(new Error(`Failed to send LLM request: ${err.message}`));
       }
     });
   }
 
-  // Processes large JSON datasets in batches to avoid API limits
-  async function generateSQLInBatches(jsonData, maxSize) {
+  // Processes large datasets in batches and merges results
+  async function extractInBatches(jsonData, maxSize) {
     const batches = [];
     let currentBatch = [];
     let currentSize = 0;
@@ -335,12 +398,13 @@
     }
 
     sendUpdate("progress", `Processing ${batches.length} batches...`);
-    const sqlParts = [];
+    const allContacts = [];
+    const allPositions = [];
 
     for (let i = 0; i < batches.length; i++) {
-      sendUpdate("progress", `Generating SQL for batch ${i + 1}/${batches.length}...`);
+      sendUpdate("progress", `Extracting batch ${i + 1}/${batches.length}...`);
       try {
-        const sql = await new Promise((resolve, reject) => {
+        const result = await new Promise((resolve, reject) => {
           chrome.runtime.sendMessage({
             action: "call_llm",
             jsonData: batches[i]
@@ -349,77 +413,87 @@
               reject(new Error(chrome.runtime.lastError.message));
               return;
             }
-            if (!response || !response.success) {
+            if (response && response.success && response.data) {
+              resolve(response.data);
+            } else {
               reject(new Error(response?.error || "Unknown error"));
-              return;
             }
-            resolve(response.sql);
           });
         });
-        sqlParts.push(sql);
+        if (result.contacts) allContacts.push(...result.contacts);
+        if (result.positions) allPositions.push(...result.positions);
         await delay(1000);
       } catch (err) {
         sendUpdate("progress", `Batch ${i + 1} failed: ${err.message}. Continuing...`);
       }
     }
 
-    if (sqlParts.length === 0) {
+    if (allContacts.length === 0 && allPositions.length === 0) {
       throw new Error("All batches failed");
     }
 
-    return sqlParts.join("\n\n");
+    return { contacts: allContacts, positions: allPositions };
   }
 
-  // Escapes SQL string values for safe insertion
-  function escapeSql(val) {
-    if (val === null || val === undefined) return "NULL";
-    return "'" + String(val).replace(/'/g, "''") + "'";
+  // Generates fallback JSON when LLM extraction fails (contacts only)
+  function generateFallbackJSON(rows) {
+    const filtered = rows.filter(r => r.linkedInUrl && (r.phone || r.email));
+    const contacts = filtered.map(r => ({
+      full_name: r.contactName || null,
+      email: r.email || null,
+      phone: r.phone || null,
+      company_name: null,
+      job_title: null,
+      city: r.contactLocation || null,
+      linkedin_id: r.linkedInUrl || null,
+      linkedin_internal_id: r.linkedin_internal_id || null,
+      source_type: "bot_linkedin_message_extraction",
+      raw_payload: {
+        contactHeadline: r.contactHeadline || null,
+        messages: r.messages || []
+      }
+    }));
+    return { contacts: contacts, positions: [] };
   }
 
-  // Generates fallback SQL when LLM generation fails
-  function generateFallbackSQL(rows) {
-    const filtered = rows.filter(r => r.linkedInUrl);
-    if (!filtered.length) return "-- No valid records\n";
+  // Syncs extracted data to WBL API via background script
+  async function syncDataToWBL(extractedData) {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("WBL sync timed out after 30 seconds"));
+      }, 30000);
 
-    const values = filtered.map(r => {
-      const fullName = r.contactName || null;
-      const linkedin_id = r.linkedInUrl || null;
-      const linkedin_internal_id = r.linkedin_internal_id || null;
-      const phone = r.phone || null;
-      const email = r.email || null;
-
-      return "(" +
-        escapeSql(fullName) + ", " +
-        "NULL, " +
-        escapeSql(email) + ", " +
-        escapeSql(phone) + ", " +
-        escapeSql(linkedin_id) + ", " +
-        "NULL, NULL, CURRENT_DATE(), 0, NULL, " +
-        escapeSql(linkedin_internal_id) +
-      ")";
-    }).join(",\n");
-
-    return `
--- LLM Failed, Generated with Fallback function
-INSERT INTO vendor_contact_extracts
-  (full_name, source_email, email, phone, linkedin_id, company_name, location, extraction_date, moved_to_vendor, created_at, linkedin_internal_id)
-VALUES
-${values}
-AS new
-ON DUPLICATE KEY UPDATE
-  full_name = new.full_name,
-  email = new.email,
-  phone = new.phone,
-  linkedin_id = new.linkedin_id,
-  linkedin_internal_id = new.linkedin_internal_id,
-  extraction_date = new.extraction_date;
-`.trim();
+      try {
+        chrome.runtime.sendMessage({
+          action: "sync_to_wbl",
+          data: extractedData
+        }, (response) => {
+          clearTimeout(timeout);
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (response && response.success) {
+            resolve(response.results);
+          } else {
+            reject(new Error(response?.error || "WBL sync failed"));
+          }
+        });
+      } catch (err) {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to sync: ${err.message}`));
+      }
+    });
   }
 
   try {
     sendUpdate("progress", "Loading conversations...");
+    
+    // Read the limit configured by the popup
+    const storageData = await chrome.storage.local.get("extractLimit");
+    const limit = storageData.extractLimit || 20;
 
-    const chatItems = await loadAllContacts();
+    const chatItems = await loadAllContacts(limit);
     if (!chatItems.length) {
       sendUpdate("error", "No chat items found.");
       return;
@@ -437,6 +511,14 @@ ON DUPLICATE KEY UPDATE
       const contactName =
         document.querySelector('.msg-entity-lockup__entity-title')?.innerText?.trim() ||
         chat.querySelector('.msg-conversation-listitem__participant-names')?.innerText?.trim() ||
+        '';
+
+      const contactHeadline = 
+        document.querySelector('.msg-entity-lockup__entity-subtitle')?.innerText?.trim() || 
+        '';
+
+      const contactLocation = 
+        document.querySelector('.msg-entity-lockup__entity-info')?.innerText?.trim() || 
         '';
 
       let headerHref = null;
@@ -471,13 +553,19 @@ ON DUPLICATE KEY UPDATE
 
       const linkedin_internal_id = extractInternalIdFromHref(headerHref || linkedInUrl) || '';
 
+      // Run NER on this contact's messages
+      const nerEntities = extractEntities(senderMessages, contactHeadline, contactLocation);
+
       results.push({
         contactName: contactName || '',
+        contactHeadline: contactHeadline || '',
+        contactLocation: contactLocation || '',
         linkedInUrl: linkedInUrl || '',
         linkedin_internal_id: linkedin_internal_id || '',
-        phone: phone || null,
-        email: email || null,
-        messages: senderMessages
+        phone: phone || nerEntities.phones[0] || null,
+        email: email || nerEntities.emails.personal[0] || null,
+        messages: senderMessages,
+        ner_entities: nerEntities
       });
 
       await delay(700);
@@ -487,32 +575,48 @@ ON DUPLICATE KEY UPDATE
     const unique = mergeAndDedupe(results);
     sendUpdate("progress", `Unique records after merge: ${unique.length}/${results.length}`);
 
+    // Download JSON backup file
     const jsonBlob = new Blob([JSON.stringify(unique, null, 2)], { type: "application/json" });
     const jsonUrl = URL.createObjectURL(jsonBlob);
     const ajson = document.createElement("a");
     ajson.href = jsonUrl;
     ajson.download = "linkedin_user_messages_structured.json";
     ajson.click();
-    sendUpdate("progress", "JSON file downloaded");
+    sendUpdate("progress", "JSON backup file downloaded");
 
-    sendUpdate("progress", "Generating SQL via LLM...");
+    // Extract structured data via LLM
+    let extractedData = null;
+    sendUpdate("progress", "Extracting structured data via LLM...");
     try {
-      const sqlText = await generateSQLViaLLM(unique);
-      if (!sqlText || !sqlText.trim()) {
-        downloadFile("upsert.sql", "-- No valid rows to insert\n");
-        sendUpdate("progress", "SQL file generated (empty)");
-      } else {
-        downloadFile("upsert.sql", sqlText.trim());
-        sendUpdate("progress", "SQL file generated and downloaded");
-        sendUpdate("done", "Extraction completed! (Generated using LLM)");
-      }
+      extractedData = await extractViaLLM(unique);
+      sendUpdate("progress", `LLM extracted: ${extractedData.contacts?.length || 0} contacts, ${extractedData.positions?.length || 0} positions`);
     } catch (err) {
       sendUpdate("error", `LLM failed: ${err.message}`);
-      sendUpdate("progress", "LLM failed, trying with fallback function...");
+      sendUpdate("progress", "Using fallback extraction...");
       await delay(1000);
-      const fallbackSQL = generateFallbackSQL(unique);
-      downloadFile("upsert.sql", fallbackSQL);
-      sendUpdate("done", "Extraction completed! (Generated using fallback)");
+      extractedData = generateFallbackJSON(unique);
+      sendUpdate("progress", `Fallback extracted: ${extractedData.contacts?.length || 0} contacts`);
+    }
+
+    // Sync to WBL API
+    if (extractedData && (extractedData.contacts?.length > 0 || extractedData.positions?.length > 0)) {
+      sendUpdate("progress", "Syncing to WBL API...");
+      try {
+        const syncResults = await syncDataToWBL(extractedData);
+        
+        let summary = "✅ Sync complete! ";
+        if (syncResults.contacts) {
+          summary += `Contacts: ${syncResults.contacts.inserted || 0} inserted, ${syncResults.contacts.duplicates || 0} duplicates. `;
+        }
+        if (syncResults.positions) {
+          summary += `Positions: ${syncResults.positions.inserted || 0} inserted, ${syncResults.positions.skipped || 0} skipped.`;
+        }
+        sendUpdate("done", summary);
+      } catch (err) {
+        sendUpdate("error", `WBL sync failed: ${err.message}. JSON backup was downloaded.`);
+      }
+    } else {
+      sendUpdate("done", "Extraction complete. No contacts or positions to sync.");
     }
   } catch (err) {
     sendUpdate("error", err.message || String(err));
