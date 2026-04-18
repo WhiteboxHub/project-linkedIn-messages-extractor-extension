@@ -352,15 +352,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       // Save the limit to local storage so the content script can read it
       await chrome.storage.local.set({ extractLimit: message.limit || 20 });
-      
+
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
       if (tab && tab.url.includes("linkedin.com/messaging")) {
+        // If on a specific thread URL, navigate to main inbox first so the sidebar loads fully
+        const isThreadUrl = tab.url.includes("/messaging/thread/") || tab.url.includes("/messaging/overlay/");
+        if (isThreadUrl) {
+          // Navigate to main inbox
+          await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/messaging/" });
+          // Wait for page to fully load (conversation list + chat items)
+          await new Promise(resolve => setTimeout(resolve, 4000));
+        }
+
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ["content.js"]
         });
         sendResponse({ status: "started" });
       } else {
+        // Not on LinkedIn messaging at all — open it in a new tab
         chrome.tabs.create({ url: "https://www.linkedin.com/messaging/" });
         sendResponse({ status: "started" });
       }
