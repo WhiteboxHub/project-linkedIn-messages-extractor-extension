@@ -34,9 +34,29 @@
     return null;
   }
 
+  // Waits until the browser URL changes from `previousUrl`
+  async function waitForUrlChange(previousUrl, timeoutMs = 6000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (window.location.href !== previousUrl) return true;
+      await delay(150);
+    }
+    return false;
+  }
+
+  // Waits until at least one .msg-s-event-listitem__body is visible in the thread panel
+  async function waitForMessagesLoaded(timeoutMs = 7000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const els = document.querySelectorAll('.msg-s-event-listitem__body');
+      if (els.length > 0) return true;
+      await delay(150);
+    }
+    return false;
+  }
+
   // ─── Phone & Email Helpers ─────────────────────────────────────────────────
 
-  // Cleans a raw phone string. Preserves leading +. Returns null if invalid length.
   function cleanPhone(raw) {
     if (!raw) return null;
     let p = String(raw).trim();
@@ -49,7 +69,6 @@
     return p;
   }
 
-  // Generates a digit-only key for phone deduplication
   function phoneKey(phone) {
     if (!phone) return null;
     const digits = phone.replace(/\D/g, '');
@@ -84,10 +103,6 @@
     return results;
   }
 
-  /**
-   * Extracts named entities from messages + headline.
-   * Returns rich entity object for LLM hint injection.
-   */
   function extractEntities(messages, headline = '', location = '') {
     const fullText = [...messages, headline].filter(Boolean).join(' ');
 
@@ -121,7 +136,6 @@
     };
   }
 
-  // Returns the first personal email found across messages array
   function extractFirstEmailFromMessages(messages) {
     for (const msg of messages) {
       const matches = nerMatches(msg, NER_EMAIL_RE);
@@ -131,7 +145,6 @@
     return null;
   }
 
-  // Returns the first valid phone number found across messages array
   function extractFirstPhoneFromMessages(messages) {
     for (const msg of messages) {
       const phones = nerMatches(msg, NER_PHONE_RE).map(cleanPhone).filter(Boolean);
@@ -266,7 +279,6 @@
 
   // ─── Scraper ──────────────────────────────────────────────────────────────
 
-  // Scrolls conversation list and returns up to `limit` chat link elements
   async function loadAllContacts(limit) {
     const scrollContainer = await waitForSelector('.msg-conversations-container__conversations-list', 10000);
     if (!scrollContainer) {
@@ -274,7 +286,6 @@
       return [];
     }
 
-    // Wait for at least one chat item to render before starting scroll loop
     const firstChat = await waitForSelector('.msg-conversation-listitem__link', 10000);
     if (!firstChat) {
       sendUpdate("error", "Chat items failed to load. Please refresh LinkedIn Messaging and try again.");
@@ -291,7 +302,6 @@
       const newHeight = scrollContainer.scrollHeight;
 
       if (newHeight === prevHeight) {
-        // One extra wait before giving up on scroll
         await delay(1000);
         if (scrollContainer.scrollHeight === prevHeight) break;
       }
@@ -302,6 +312,54 @@
     const chats = allChats.slice(0, limit);
     sendUpdate("progress", `Found ${chats.length} conversations (limit: ${limit})`);
     return chats;
+  }
+
+  // Extracts the thread ID from the current LinkedIn messaging URL
+  // e.g. /messaging/thread/2-ABC123/ → "2-ABC123"
+  function getCurrentThreadId() {
+    const match = window.location.pathname.match(/\/messaging\/thread\/([^/]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  // Reads ONLY the recruiter's messages from the currently active thread.
+  // Double-filtered: by thread ID (data-event-urn) AND by sent-indicator absence.
+  async function readCurrentThreadMessages() {
+    const loaded = await waitForMessagesLoaded(7000);
+    if (!loaded) return [];
+
+    const threadId = getCurrentThreadId();
+    const messageElements = Array.from(document.querySelectorAll('.msg-s-event-listitem__body'));
+    const senderMessages = [];
+
+    for (const el of messageElements) {
+      const parentContainer = el.closest('.msg-s-event-listitem, li.msg-s-message-list__event');
+      if (!parentContainer) continue;
+
+      // ── Filter 1: Thread ID match ──────────────────────────────────────────
+      // Each message's data-event-urn contains the thread ID.
+      // If it doesn't match the current URL thread ID, it's from another conversation still in DOM.
+      if (threadId) {
+        const eventUrn = parentContainer.getAttribute('data-event-urn') || '';
+        if (eventUrn && !eventUrn.includes(threadId)) {
+          continue; // belongs to a different thread — skip it
+        }
+      }
+
+      // ── Filter 2: Sent-indicator (self-message) check ──────────────────────
+      // The blue checkmark (--sent) is ONLY on messages YOU sent. Recruiters never have it.
+      const hasSentIndicator =
+        parentContainer.querySelector('.msg-s-event-with-indicator__sending-indicator--sent') !== null ||
+        parentContainer.querySelector('[data-test-msg-cross-pillar-message-sending-indicator-presenter__sending-indicator--sent]') !== null;
+
+      if (!hasSentIndicator) {
+        const txt = (el.innerText || '').trim();
+        if (txt && txt.length > 2) {
+          senderMessages.push(txt.replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim());
+        }
+      }
+    }
+
+    return senderMessages;
   }
 
   // ─── LLM Integration ──────────────────────────────────────────────────────
@@ -316,22 +374,13 @@
     }
 
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("LLM API call timed out after 60 seconds"));
-      }, 60000);
-
+      const timeout = setTimeout(() => reject(new Error("LLM API call timed out after 60 seconds")), 60000);
       try {
         chrome.runtime.sendMessage({ action: "call_llm", jsonData }, (response) => {
           clearTimeout(timeout);
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-            return;
-          }
-          if (response && response.success && response.data) {
-            resolve(response.data);
-          } else {
-            reject(new Error(response?.error || "LLM failed to extract data"));
-          }
+          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+          if (response && response.success && response.data) resolve(response.data);
+          else reject(new Error(response?.error || "LLM failed to extract data"));
         });
       } catch (err) {
         clearTimeout(timeout);
@@ -438,11 +487,25 @@
 
     for (let i = 0; i < chatItems.length; i++) {
       const chat = chatItems[i];
+      sendUpdate("progress", `Processing chat ${i + 1} of ${chatItems.length}...`);
+
+      // Capture URL before clicking so we can detect the thread change
+      const urlBefore = window.location.href;
+
       chat.scrollIntoView({ behavior: "smooth", block: "center" });
       chat.click();
-      sendUpdate("progress", `Processing chat ${i + 1} of ${chatItems.length}...`);
-      await delay(2800);
 
+      // Wait for URL to change (LinkedIn SPA navigates to /messaging/thread/...)
+      // Fallback: wait up to 4s regardless
+      await Promise.race([
+        waitForUrlChange(urlBefore, 4000),
+        delay(4000)
+      ]);
+
+      // Extra buffer for message DOM to fully render
+      await delay(1500);
+
+      // Read contact metadata from the thread header
       const contactName =
         document.querySelector('.msg-entity-lockup__entity-title')?.innerText?.trim() ||
         chat.querySelector('.msg-conversation-listitem__participant-names')?.innerText?.trim() ||
@@ -457,23 +520,14 @@
       let headerHref = null;
       const headerLinkEl = await waitForSelector(
         '.msg-thread__link-to-profile, .msg-overlay-bubble-header__recipient-link, .msg-entity-lockup__entity-link',
-        5000
+        4000
       );
       if (headerLinkEl) {
         headerHref = headerLinkEl.getAttribute('href') || headerLinkEl.getAttribute('data-href') || null;
       }
 
-      await waitForSelector('.msg-s-event-listitem__body', 5000);
-      const messageElements = Array.from(document.querySelectorAll('.msg-s-event-listitem__body'));
-      const senderMessages = [];
-      for (const el of messageElements) {
-        const parent = el.closest('.msg-s-message-group, .msg-s-event-listitem');
-        const isSelf = parent && parent.classList.contains('msg-s-message-group--self');
-        if (!isSelf) {
-          const txt = (el.innerText || '').trim();
-          if (txt) senderMessages.push(txt.replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim());
-        }
-      }
+      // Read ONLY this thread's messages (isolated, correct)
+      const senderMessages = await readCurrentThreadMessages();
 
       const phone = extractFirstPhoneFromMessages(senderMessages);
       const email = extractFirstEmailFromMessages(senderMessages);
@@ -503,7 +557,8 @@
         ner_entities: nerEntities
       });
 
-      await delay(700);
+      // Small pause before moving to next conversation
+      await delay(500);
     }
 
     sendUpdate("progress", "Merging duplicate contacts...");
