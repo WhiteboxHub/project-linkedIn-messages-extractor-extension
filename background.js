@@ -211,10 +211,15 @@ function isTokenExpired(token) {
 // Authenticates with WBL API and returns access token
 async function wblLogin(apiUrl, email, password) {
   const loginUrl = `${apiUrl.replace(/\/$/, '')}/login`;
+  
+  const params = new URLSearchParams();
+  params.append('username', email);
+  params.append('password', password);
+
   const response = await fetch(loginUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password })
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params
   });
 
   if (!response.ok) {
@@ -222,6 +227,9 @@ async function wblLogin(apiUrl, email, password) {
     try {
       const errData = await response.json();
       errorMsg = errData.message || errData.detail || errorMsg;
+      if (typeof errorMsg === 'object') {
+        errorMsg = JSON.stringify(errorMsg);
+      }
     } catch {}
     throw new Error(errorMsg);
   }

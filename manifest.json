@@ -4,13 +4,14 @@
   "version": "3.0",
   "description": "Extracts LinkedIn messages, cleans data, removes duplicates, and syncs to WBL API via LLM.",
   "permissions": ["scripting", "activeTab", "downloads", "storage"],
-  "host_permissions": ["https://www.linkedin.com/*"],
-  "optional_host_permissions": [
+  "host_permissions": [
+    "https://www.linkedin.com/*",
     "https://api.openai.com/*",
     "https://api.groq.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://*.openai.azure.com/*",
     "http://localhost:8000/*",
+    "http://localhost:5000/*",
     "https://api.whitebox-learning.com/*"
   ],
   "background": {
