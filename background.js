@@ -17,12 +17,12 @@ async function callLLMAPI(jsonData, config, customPrompt = null) {
 RULES OF ENGAGEMENT (CRITICAL):
 1. **Conditional Contact Extraction**: Extract a contact ONLY if a PERSONAL business email address is found in the conversation. Do NOT extract a contact if only a phone number or URL is present. No Email = No Contact Record.
 2. **Exclude Generic/Automated Emails**: DO NOT extract emails starting with "support@", "info@", "donotreply@", "noreply@", "admin@", "hr@", or generic "hello@".
-3. **Conditional Job Extraction**: ALWAYS generate a job position entry ONLY if a personal email address is found in the conversation. If there is NO email, do NOT extract the job into positions, even if there is a phone number or job description.
+3. **Conditional Job Extraction**: ALWAYS generate a job position entry if a job description, job URL, or salary is found in the conversation, EVEN IF there is no email. However, always include whatever contact info is available (like a phone number) in the contact_info string.
 4. **Multiple Jobs**: If the contact mentions multiple distinct job opportunities, create a SEPARATE position entry for EACH one.
 5. **No Data = Empty Arrays**: If NO valid personal email, phone, or job info is found, return empty arrays. No extraction for purely social "chit-chat".
 6. **Data Formatting**:
    - Emails: ALWAYS lowercase.
-   - Phones: REMOVE "+" and formatting. Digits only.
+   - Phones: REMOVE "+" and formatting. Digits only. **CRITICAL**: Ignore 10-digit numbers that appear to be LinkedIn Job IDs (found in URLs like /jobs/view/...). If a 10-digit number is the same as a number in a URL, it is NOT a phone number.
    - city: Extract city from contactLocation or message text (e.g. "Austin" from "Austin, TX").
    - state: Extract state/province from contactLocation or message text (e.g. "TX" from "Austin, TX").
    - country: Default to "US" if the context indicates USA, otherwise extract from message text. Use null if unknown.
@@ -70,7 +70,7 @@ REQUIRED OUTPUT FORMAT (Return ONLY valid JSON, no markdown, no code blocks):
   "positions": [
     {
       "source": "bot_linkedin_message_extraction",
-      "source_uid": "string (linkedin_internal_id of the recruiter)",
+      "source_uid": "string (extract actual Job ID from URL if available, otherwise null. DO NOT use recruiter ID)",
       "title": "string (job title mentioned in message, e.g. 'Software Developer 2')",
       "company": "string (hiring company name, e.g. 'Texas Department of Public Safety')",
       "location": "string (job location, e.g. 'Austin, TX')",
@@ -359,8 +359,7 @@ async function syncToWBL(extractedData, wblConfig) {
       {
         method: "POST",
         body: JSON.stringify({ 
-          positions: positions,
-          candidate_id: candidateId // Pass at bulk level in case backend expects it there
+          positions: positions
         })
       },
       wblConfig

@@ -2,7 +2,7 @@
   // ─── NER Regex Patterns ────────────────────────────────────────────────────
   const NER_EMAIL_RE = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g;
   const NER_PHONE_RE = /(?:\+?[\d]{1,4}[\s\-.]?)?(?:\(?\d{2,5}\)?[\s\-.]?)?\d{3,4}[\s\-.]?\d{3,5}(?:\s?(?:ext|x|ext\.)\s?\d{1,5})?/g;
-  const NER_URL_RE = /https?:\/\/[^\s"'<>)\]]+/g;
+  const NER_URL_RE = /\b(?:https?:\/\/|www\.|linkedin\.com\/)[^\s"'<>)\]]+\b/gi;
   const NER_SALARY_RE = /\$\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?\s*(?:[-–to]+\s*\$?\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?)?(?:\s*\/\s*(?:year|yr|annum|month|hr|hour))?/g;
   const NER_TITLE_RE = /\b(?:Senior|Sr\.?|Junior|Jr\.?|Lead|Principal|Staff|Associate|Mid(?:-level)?|Entry[-\s]level)?\s*(?:Software|Frontend|Back[-\s]?end|Full[-\s]?Stack|Mobile|iOS|Android|DevOps|MLOps|Cloud|Data|Platform|Site Reliability|Security|QA|Test|Product|Project|Program|Embedded|Network|AI|ML|Machine Learning|NLP|GenAI|UI\/UX|UX|UI|Graphic|Systems|Infrastructure|Solutions|Technical|Sales|Recruiting|Talent)\s+(?:Engineer|Developer|Architect|Manager|Lead|Director|Analyst|Designer|Consultant|Recruiter|Specialist|Associate|Coordinator|Researcher|Scientist)(?:\s+(?:I{1,3}|IV|V|1|2|3|4))?\b/gi;
   const NER_ORG_RE = /(?:at|@|with|from|joins?|joined?)\s+([A-Z][A-Za-z0-9&'\-\s]{1,30}(?:Inc\.?|LLC\.?|Ltd\.?|Corp\.?|Co\.?|Agency|Group|Solutions|Tech|Labs?|Systems|Services|Consulting|Digital|Global)?)(?=[.,:;!?]|\s|$)/g;
@@ -124,8 +124,13 @@
     const personalEmails = nerDedupe(allEmails.filter(e => !isGenericEmail(e)));
     const genericEmails = nerDedupe(allEmails.filter(isGenericEmail));
 
-    // Strip URLs before running phone extraction to prevent extracting job IDs (e.g. from linkedin.com/jobs/view/1234567890)
-    const textWithoutUrls = fullText.replace(NER_URL_RE, ' ');
+    // Strip URLs and LinkedIn Job ID patterns (e.g., /view/1234567890) before running phone extraction
+    // This prevents 10-digit Job IDs from being falsely flagged as phone numbers.
+    const textWithoutUrls = fullText
+      .replace(NER_URL_RE, ' ') 
+      .replace(/\/view\/\d{8,15}/g, ' ')
+      .replace(/\/jobs\/\d{8,15}/g, ' ');
+    
     const phones = nerDedupe(nerMatches(textWithoutUrls, NER_PHONE_RE).map(cleanPhone).filter(Boolean));
 
     const allUrls = nerDedupe(nerMatches(fullText, NER_URL_RE));
