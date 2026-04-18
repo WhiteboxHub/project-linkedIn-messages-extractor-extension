@@ -124,7 +124,10 @@
     const personalEmails = nerDedupe(allEmails.filter(e => !isGenericEmail(e)));
     const genericEmails = nerDedupe(allEmails.filter(isGenericEmail));
 
-    const phones = nerDedupe(nerMatches(fullText, NER_PHONE_RE).map(cleanPhone).filter(Boolean));
+    // Strip URLs before running phone extraction to prevent extracting job IDs (e.g. from linkedin.com/jobs/view/1234567890)
+    const textWithoutUrls = fullText.replace(NER_URL_RE, ' ');
+    const phones = nerDedupe(nerMatches(textWithoutUrls, NER_PHONE_RE).map(cleanPhone).filter(Boolean));
+
     const allUrls = nerDedupe(nerMatches(fullText, NER_URL_RE));
     const applyUrls = allUrls.filter(url =>
       /apply|job|career|position|opening|role|hiring|recruit|lever\.co|greenhouse\.io|ashbyhq|workable|breezy|smartrecruiters|icims|taleo|workday|bamboo/i.test(url)
@@ -482,7 +485,7 @@
   }
 
   function generateFallbackJSON(rows) {
-    const filtered = rows.filter(r => r.linkedInUrl && (r.phone || r.email));
+    const filtered = rows.filter(r => r.linkedInUrl && r.email);
     const contacts = filtered.map(r => {
       // Parse city/state/country from contactLocation like "Austin, TX" or "New York, NY, US"
       let city = null, state = null, country = null;
@@ -510,9 +513,12 @@
         city,
         state,
         country,
+        postal_code: null,
+        zip: null,
         linkedin_id: r.linkedInUrl || null,
         linkedin_internal_id: r.linkedin_internal_id || null,
         source_type: "bot_linkedin_message_extraction",
+        extractor_version: chrome.runtime.getManifest().version,
         source_reference: r.linkedInUrl || null,
         raw_payload: {
           contactHeadline: r.contactHeadline || null,

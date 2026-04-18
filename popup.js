@@ -20,7 +20,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const wblEmail = document.getElementById("wblEmail");
   const wblPassword = document.getElementById("wblPassword");
   const wblEmployeeId = document.getElementById("wblEmployeeId");
-  const wblJobId = document.getElementById("wblJobId");
+  const wblCandidateId = document.getElementById("wblCandidateId");
   const saveWblBtn = document.getElementById("saveWblBtn");
   const testWblBtn = document.getElementById("testWblBtn");
   const syncWblBtn = document.getElementById("syncWblBtn");
@@ -211,7 +211,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (wblResult.wblEmail) wblEmail.value = wblResult.wblEmail;
       if (wblResult.wblPassword) wblPassword.value = wblResult.wblPassword;
       if (wblResult.wblEmployeeId) wblEmployeeId.value = wblResult.wblEmployeeId;
-      if (wblResult.wblJobId) wblJobId.value = wblResult.wblJobId;
+      // Handle rename migration: check wblCandidateId first, then fallback to old wblJobId
+      if (wblResult.wblCandidateId) {
+        wblCandidateId.value = wblResult.wblCandidateId;
+      } else if (wblResult.wblJobId) {
+        wblCandidateId.value = wblResult.wblJobId;
+      }
 
     } catch (err) {
       console.error("Error loading config:", err);
@@ -279,7 +284,7 @@ document.addEventListener("DOMContentLoaded", () => {
       wblEmail: wblEmail.value,
       wblPassword: wblPassword.value,
       wblEmployeeId: wblEmployeeId.value,
-      wblJobId: wblJobId.value
+      wblCandidateId: wblCandidateId.value
     };
 
     if (!config.wblApiUrl || !config.wblEmail || !config.wblPassword) {

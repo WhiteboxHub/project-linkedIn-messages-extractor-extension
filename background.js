@@ -15,9 +15,9 @@ async function callLLMAPI(jsonData, config, customPrompt = null) {
     prompt = `You are a data extraction specialist. Extract structured contact and job position data from the following LinkedIn conversation data.
 
 RULES OF ENGAGEMENT (CRITICAL):
-1. **Conditional Contact Extraction**: Extract a contact ONLY if a PERSONAL business email address or phone number is found.
+1. **Conditional Contact Extraction**: Extract a contact ONLY if a PERSONAL business email address is found in the conversation. Do NOT extract a contact if only a phone number or URL is present. No Email = No Contact Record.
 2. **Exclude Generic/Automated Emails**: DO NOT extract emails starting with "support@", "info@", "donotreply@", "noreply@", "admin@", "hr@", or generic "hello@".
-3. **Conditional Job Extraction**: ALWAYS generate a job position entry if a personal email address is found in the conversation. Extract whatever job details are available (title, company, location, salary, etc.). If specific job details are not mentioned, still create the position entry with available info and set missing fields to null.
+3. **Conditional Job Extraction**: ALWAYS generate a job position entry ONLY if a personal email address is found in the conversation. If there is NO email, do NOT extract the job into positions, even if there is a phone number or job description.
 4. **Multiple Jobs**: If the contact mentions multiple distinct job opportunities, create a SEPARATE position entry for EACH one.
 5. **No Data = Empty Arrays**: If NO valid personal email, phone, or job info is found, return empty arrays. No extraction for purely social "chit-chat".
 6. **Data Formatting**:
@@ -55,6 +55,7 @@ REQUIRED OUTPUT FORMAT (Return ONLY valid JSON, no markdown, no code blocks):
       "city": "string or null",
       "state": "string or null",
       "country": "string or null (default 'US' if USA-context)",
+      "postal_code": "string or null (extract from address or message)",
       "linkedin_id": "string (linkedInUrl)",
       "linkedin_internal_id": "string",
       "source_type": "bot_linkedin_message_extraction",
@@ -73,6 +74,7 @@ REQUIRED OUTPUT FORMAT (Return ONLY valid JSON, no markdown, no code blocks):
       "title": "string (job title mentioned in message, e.g. 'Software Developer 2')",
       "company": "string (hiring company name, e.g. 'Texas Department of Public Safety')",
       "location": "string (job location, e.g. 'Austin, TX')",
+      "zip": "string or null (extract from job location or description)",
       "description": "string (full job description extracted from message text)",
       "contact_info": "string - MUST be formatted EXACTLY as: 'Email: <recruiter email or empty>, Phone: <recruiter phone or empty>, apply_url: <url or empty>'",
       "notes": "string (salary/rate, tech stack, visa requirements, contract type, benefits, etc.)",
@@ -310,10 +312,12 @@ async function syncToWBL(extractedData, wblConfig) {
 
   // Step 1: Sync contacts
   if (extractedData.contacts && extractedData.contacts.length > 0) {
-    // Attach raw_payload and source_type to each contact
+    const version = chrome.runtime.getManifest().version;
+    // Attach raw_payload, source_type and version to each contact
     const contacts = extractedData.contacts.map(c => ({
       ...c,
       source_type: c.source_type || "bot_linkedin_message_extraction",
+      extractor_version: version,
       raw_payload: c.raw_payload || null
     }));
 
@@ -337,19 +341,27 @@ async function syncToWBL(extractedData, wblConfig) {
 
   // Step 2: Sync positions
   if (extractedData.positions && extractedData.positions.length > 0) {
-    // Attach source to each position
+    const candidateId = wblConfig.wblCandidateId ? parseInt(wblConfig.wblCandidateId) : null;
+    const version = chrome.runtime.getManifest().version;
+    
+    // Attach source, candidate_id and version to each position
     const positions = extractedData.positions.map(p => ({
       ...p,
+      candidate_id: candidateId,
+      extractor_version: version,
       source: p.source || "bot_linkedin_message_extraction",
       payload: p.payload || null
     }));
 
-    console.log(`Syncing ${positions.length} positions to WBL...`);
+    console.log(`Syncing ${positions.length} positions to WBL (Candidate ID: ${candidateId})...`);
     const posRes = await authenticatedFetch(
       `${baseUrl}/email-positions/bulk`,
       {
         method: "POST",
-        body: JSON.stringify({ positions: positions })
+        body: JSON.stringify({ 
+          positions: positions,
+          candidate_id: candidateId // Pass at bulk level in case backend expects it there
+        })
       },
       wblConfig
     );
@@ -483,7 +495,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const wblConfig = await chrome.storage.sync.get([
-          "wblApiUrl", "wblEmail", "wblPassword", "wblEmployeeId", "wblJobId"
+          "wblApiUrl", "wblEmail", "wblPassword", "wblEmployeeId", "wblCandidateId"
         ]);
 
         if (!wblConfig.wblApiUrl || !wblConfig.wblEmail || !wblConfig.wblPassword) {
