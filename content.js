@@ -328,44 +328,67 @@
   }
 
   // Reads ONLY the recruiter's messages from the currently active thread.
-  // Double-filtered: by thread ID (data-event-urn) AND by sent-indicator absence.
+  //
+  // KEY INSIGHT: LinkedIn groups consecutive messages from ONE sender into a single
+  // <li class="msg-s-message-list__event">. The a11y heading confirms the sender:
+  //   "Man Pandey sent the following message at 2:28 PM" → recruiter
+  //   "Bindu Ganta sent the following messages at 11:50 AM" → self (skip)
+  //
+  // If ANY message in a group has the --sent indicator, the WHOLE GROUP is ours → skip.
+  // This is guaranteed by LinkedIn's DOM structure and cannot be bypassed.
   async function readCurrentThreadMessages() {
-    const loaded = await waitForMessagesLoaded(7000);
-    if (!loaded) return [];
+    await waitForMessagesLoaded(7000);
+
+    // Scope to the ONE active thread panel (not the entire document)
+    const threadContainer =
+      document.querySelector('.msg-s-message-list.scrollable') ||
+      document.querySelector('.msg-s-message-list-content') ||
+      document;
 
     const convKey = getConversationKey();
-    const messageElements = Array.from(document.querySelectorAll('.msg-s-event-listitem__body'));
     const senderMessages = [];
 
-    for (const el of messageElements) {
-      const parentContainer = el.closest('.msg-s-event-listitem, li.msg-s-message-list__event');
-      if (!parentContainer) continue;
+    // Iterate through message GROUPS (each li = one sender's burst of messages)
+    const messageGroups = Array.from(
+      threadContainer.querySelectorAll('li.msg-s-message-list__event')
+    );
 
-      // ── Filter 1: Conversation key match ──────────────────────────────────
-      // The URL thread ID is '2-CONV_UUID'. Stripping '2-' gives the CONV_UUID in base64.
-      // Every message in this conversation has a data-event-urn whose message ID ENDS WITH CONV_UUID.
-      // Messages from other conversations cached in DOM will NOT end with this key.
+    for (const group of messageGroups) {
+      // ── Filter 1: Conversation key (wrong thread check) ────────────────────
+      // Check the data-event-urn of the first message in this group against the
+      // current URL's conversation key. If it doesn't match, skip the whole group.
       if (convKey) {
-        const eventUrn = parentContainer.getAttribute('data-event-urn') || '';
-        if (eventUrn) {
-          // Extract the message ID portion: urn:li:msg_message:(profile,MSG_ID)
-          const urnMsgMatch = eventUrn.match(/,([^)]+)\)$/);
-          if (urnMsgMatch && !urnMsgMatch[1].endsWith(convKey)) {
-            continue; // belongs to a different conversation — skip it
+        const firstEvent = group.querySelector('.msg-s-event-listitem[data-event-urn]');
+        if (firstEvent) {
+          const urn = firstEvent.getAttribute('data-event-urn') || '';
+          const urnMatch = urn.match(/,([^)]+)\)$/);
+          if (urnMatch && !urnMatch[1].endsWith(convKey)) {
+            continue; // This group belongs to a different conversation — skip
           }
         }
+        // If no event urn found in this group, check the a11y heading approach
+        // (some groups may be time separators without messages, skip those too)
+        const hasMessages = group.querySelector('.msg-s-event-listitem__body');
+        if (!hasMessages) continue;
       }
 
-      // ── Filter 2: Sent-indicator (self-message) check ──────────────────────
-      // The blue checkmark (--sent) is ONLY on messages YOU sent. Recruiters never have it.
-      const hasSentIndicator =
-        parentContainer.querySelector('.msg-s-event-with-indicator__sending-indicator--sent') !== null ||
-        parentContainer.querySelector('[data-test-msg-cross-pillar-message-sending-indicator-presenter__sending-indicator--sent]') !== null;
+      // ── Filter 2: Self-message group check ────────────────────────────────
+      // If ANY message in this group has the --sent indicator, ALL messages
+      // in this group came from us (the account holder). Skip the entire group.
+      const isSelfGroup =
+        group.querySelector('.msg-s-event-with-indicator__sending-indicator--sent') !== null ||
+        group.querySelector('[data-test-msg-cross-pillar-message-sending-indicator-presenter__sending-indicator--sent]') !== null;
 
-      if (!hasSentIndicator) {
+      if (isSelfGroup) continue;
+
+      // ── Collect recruiter messages from this group ─────────────────────────
+      const bodyEls = group.querySelectorAll('.msg-s-event-listitem__body');
+      for (const el of bodyEls) {
         const txt = (el.innerText || '').trim();
         if (txt && txt.length > 2) {
-          senderMessages.push(txt.replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim());
+          senderMessages.push(
+            txt.replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim()
+          );
         }
       }
     }
