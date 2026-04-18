@@ -314,11 +314,17 @@
     return chats;
   }
 
-  // Extracts the thread ID from the current LinkedIn messaging URL
-  // e.g. /messaging/thread/2-ABC123/ → "2-ABC123"
-  function getCurrentThreadId() {
+  // Extracts the conversation key from the current LinkedIn messaging URL.
+  // URL format: /messaging/thread/2-CONV_UUID_BASE64/
+  // Message data-event-urn format: urn:li:msg_message:(profile,2-MSGID_ENDING_WITH_CONV_UUID)
+  // All messages in the same conversation SHARE the same CONV_UUID suffix.
+  // Stripping the '2-' prefix gives the raw base64 UUID to match against URN suffixes.
+  function getConversationKey() {
     const match = window.location.pathname.match(/\/messaging\/thread\/([^/]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
+    if (!match) return null;
+    const threadId = decodeURIComponent(match[1]);
+    // Strip leading version prefix (e.g. "2-") to get pure conversation UUID in base64
+    return threadId.replace(/^\d+-/, '');
   }
 
   // Reads ONLY the recruiter's messages from the currently active thread.
@@ -327,7 +333,7 @@
     const loaded = await waitForMessagesLoaded(7000);
     if (!loaded) return [];
 
-    const threadId = getCurrentThreadId();
+    const convKey = getConversationKey();
     const messageElements = Array.from(document.querySelectorAll('.msg-s-event-listitem__body'));
     const senderMessages = [];
 
@@ -335,13 +341,18 @@
       const parentContainer = el.closest('.msg-s-event-listitem, li.msg-s-message-list__event');
       if (!parentContainer) continue;
 
-      // ── Filter 1: Thread ID match ──────────────────────────────────────────
-      // Each message's data-event-urn contains the thread ID.
-      // If it doesn't match the current URL thread ID, it's from another conversation still in DOM.
-      if (threadId) {
+      // ── Filter 1: Conversation key match ──────────────────────────────────
+      // The URL thread ID is '2-CONV_UUID'. Stripping '2-' gives the CONV_UUID in base64.
+      // Every message in this conversation has a data-event-urn whose message ID ENDS WITH CONV_UUID.
+      // Messages from other conversations cached in DOM will NOT end with this key.
+      if (convKey) {
         const eventUrn = parentContainer.getAttribute('data-event-urn') || '';
-        if (eventUrn && !eventUrn.includes(threadId)) {
-          continue; // belongs to a different thread — skip it
+        if (eventUrn) {
+          // Extract the message ID portion: urn:li:msg_message:(profile,MSG_ID)
+          const urnMsgMatch = eventUrn.match(/,([^)]+)\)$/);
+          if (urnMsgMatch && !urnMsgMatch[1].endsWith(convKey)) {
+            continue; // belongs to a different conversation — skip it
+          }
         }
       }
 
@@ -506,25 +517,42 @@
       await delay(1500);
 
       // Read contact metadata from the thread header
+      // Primary source: profile card at top of message list
+      // (<div class="msg-s-profile-card">) — loads reliably with messages
+      const profileCard = document.querySelector('.msg-s-profile-card');
+
       const contactName =
+        profileCard?.querySelector('.profile-card-one-to-one__profile-link span.truncate')?.innerText?.trim() ||
         document.querySelector('.msg-entity-lockup__entity-title')?.innerText?.trim() ||
         chat.querySelector('.msg-conversation-listitem__participant-names')?.innerText?.trim() ||
         '';
 
+      // Headline: <div class="artdeco-entity-lockup__subtitle"> inside profile card
       const contactHeadline =
-        document.querySelector('.msg-entity-lockup__entity-subtitle')?.innerText?.trim() || '';
+        profileCard?.querySelector('.artdeco-entity-lockup__subtitle')?.innerText?.trim() ||
+        document.querySelector('.msg-entity-lockup__entity-info')?.innerText?.trim() ||
+        '';
 
-      const contactLocation =
-        document.querySelector('.msg-entity-lockup__entity-info')?.innerText?.trim() || '';
+      // Location not available in thread header — NER will extract it from messages
+      const contactLocation = '';
 
-      let headerHref = null;
-      const headerLinkEl = await waitForSelector(
-        '.msg-thread__link-to-profile, .msg-overlay-bubble-header__recipient-link, .msg-entity-lockup__entity-link',
-        4000
-      );
-      if (headerLinkEl) {
-        headerHref = headerLinkEl.getAttribute('href') || headerLinkEl.getAttribute('data-href') || null;
+      // Profile URL: from profile card link OR thread header link
+      const profileCardHref =
+        profileCard?.querySelector('a.profile-card-one-to-one__profile-link')?.getAttribute('href') ||
+        profileCard?.querySelector('a[href*="linkedin.com/in/"]')?.getAttribute('href') ||
+        null;
+
+      let headerHref = profileCardHref;
+      if (!headerHref) {
+        const headerLinkEl = await waitForSelector(
+          '.msg-thread__link-to-profile, .msg-overlay-bubble-header__recipient-link, .msg-entity-lockup__entity-link',
+          4000
+        );
+        if (headerLinkEl) {
+          headerHref = headerLinkEl.getAttribute('href') || headerLinkEl.getAttribute('data-href') || null;
+        }
       }
+
 
       // Read ONLY this thread's messages (isolated, correct)
       const senderMessages = await readCurrentThreadMessages();
