@@ -16,6 +16,20 @@
 
   // ─── Core Utilities ────────────────────────────────────────────────────────
 
+  // Detect the account holder's name from LinkedIn's nav bar (the logged-in user)
+  function getAccountHolderName() {
+    // LinkedIn shows the logged-in user's name in these locations
+    const navProfile = document.querySelector('.global-nav__me-photo');
+    const altText = navProfile?.getAttribute('alt') || '';
+    if (altText && altText.length > 2) return altText.trim();
+
+    // Fallback: try the profile link text in the nav
+    const navName = document.querySelector('.t-16.t-black.t-bold')?.innerText?.trim();
+    if (navName && navName.length > 2) return navName;
+
+    return null;
+  }
+
   function sendUpdate(type, text) {
     chrome.runtime.sendMessage({ from: "content", type, text });
   }
@@ -469,18 +483,44 @@
 
   function generateFallbackJSON(rows) {
     const filtered = rows.filter(r => r.linkedInUrl && (r.phone || r.email));
-    const contacts = filtered.map(r => ({
-      full_name: r.contactName || null,
-      email: r.email || null,
-      phone: r.phone || null,
-      company_name: null,
-      job_title: null,
-      city: r.contactLocation || null,
-      linkedin_id: r.linkedInUrl || null,
-      linkedin_internal_id: r.linkedin_internal_id || null,
-      source_type: "bot_linkedin_message_extraction",
-      raw_payload: { contactHeadline: r.contactHeadline || null, messages: r.messages || [] }
-    }));
+    const contacts = filtered.map(r => {
+      // Parse city/state/country from contactLocation like "Austin, TX" or "New York, NY, US"
+      let city = null, state = null, country = null;
+      if (r.contactLocation) {
+        const parts = r.contactLocation.split(',').map(s => s.trim());
+        if (parts.length >= 3) {
+          city = parts[0] || null;
+          state = parts[1] || null;
+          country = parts[2] || null;
+        } else if (parts.length === 2) {
+          city = parts[0] || null;
+          state = parts[1] || null;
+          country = 'US';
+        } else {
+          city = parts[0] || null;
+        }
+      }
+
+      return {
+        full_name: r.contactName || null,
+        email: r.email ? r.email.toLowerCase() : null,
+        phone: r.phone ? r.phone.replace(/\D/g, '') : null,
+        company_name: null,
+        job_title: null,
+        city,
+        state,
+        country,
+        linkedin_id: r.linkedInUrl || null,
+        linkedin_internal_id: r.linkedin_internal_id || null,
+        source_type: "bot_linkedin_message_extraction",
+        source_reference: r.linkedInUrl || null,
+        raw_payload: {
+          contactHeadline: r.contactHeadline || null,
+          messages: r.messages || [],
+          ner_entities: r.ner_entities || null
+        }
+      };
+    });
     return { contacts, positions: [] };
   }
 
@@ -518,6 +558,8 @@
     }
 
     const results = [];
+    const accountHolderName = getAccountHolderName();
+    console.log('[Extractor] Account holder detected:', accountHolderName);
 
     for (let i = 0; i < chatItems.length; i++) {
       const chat = chatItems[i];
@@ -605,7 +647,8 @@
         phone: phone || nerEntities.phones[0] || null,
         email: email || nerEntities.emails.personal[0] || null,
         messages: senderMessages,
-        ner_entities: nerEntities
+        ner_entities: nerEntities,
+        accountHolderName: accountHolderName || ''
       });
 
       // Small pause before moving to next conversation

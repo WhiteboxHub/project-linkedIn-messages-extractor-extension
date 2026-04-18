@@ -17,25 +17,30 @@ async function callLLMAPI(jsonData, config, customPrompt = null) {
 RULES OF ENGAGEMENT (CRITICAL):
 1. **Conditional Contact Extraction**: Extract a contact ONLY if a PERSONAL business email address or phone number is found.
 2. **Exclude Generic/Automated Emails**: DO NOT extract emails starting with "support@", "info@", "donotreply@", "noreply@", "admin@", "hr@", or generic "hello@".
-3. **Conditional Job Extraction**: Generate a job position entry ONLY if the message mentions a specific job role AND contains a **personal email address**. Phone-only or URL-only records do NOT qualify. If no email is found, DO NOT extract the job into positions.
+3. **Conditional Job Extraction**: ALWAYS generate a job position entry if a personal email address is found in the conversation. Extract whatever job details are available (title, company, location, salary, etc.). If specific job details are not mentioned, still create the position entry with available info and set missing fields to null.
 4. **Multiple Jobs**: If the contact mentions multiple distinct job opportunities, create a SEPARATE position entry for EACH one.
 5. **No Data = Empty Arrays**: If NO valid personal email, phone, or job info is found, return empty arrays. No extraction for purely social "chit-chat".
 6. **Data Formatting**:
    - Emails: ALWAYS lowercase.
    - Phones: REMOVE "+" and formatting. Digits only.
-   - city: Use "contactLocation" from JSON as the city.
+   - city: Extract city from contactLocation or message text (e.g. "Austin" from "Austin, TX").
+   - state: Extract state/province from contactLocation or message text (e.g. "TX" from "Austin, TX").
+   - country: Default to "US" if the context indicates USA, otherwise extract from message text. Use null if unknown.
 7. **Leveraging NER Entities**: The input JSON includes pre-extracted \`ner_entities\` (emails, phones, job titles, skills, salaries). Prioritize these entities when filling out fields, but verify against the message context to resolve ambiguities.
+8. **raw_payload**: MUST include contactHeadline, all messages, and ner_entities as shown in the schema below. Do NOT return an empty object.
+9. **CRITICAL - Account Holder Exclusion**: The input includes an \`accountHolderName\` field — this is the name of the LinkedIn ACCOUNT OWNER whose inbox is being scraped. NEVER extract the account holder's own phone number or email as the contact's phone/email. Only extract contact info belonging to the MESSAGE SENDER (the recruiter/other person). If a message contains the account holder replying with their own phone/email, IGNORE those values entirely.
 
 INPUT JSON FIELDS:
-- contactName: Full name
-- contactHeadline: Professional headline (use to extract company_name and job_title)
-- contactLocation: Location (City/Country)
+- contactName: Full name of the sender
+- contactHeadline: Professional headline (use to extract company_name and job_title of the SENDER)
+- contactLocation: Location (City/State/Country)
 - linkedInUrl: LinkedIn profile URL
 - linkedin_internal_id: Internal ID
-- phone: May be null
-- email: May be null
-- messages: Array of message strings from this contact.
+- phone: Pre-extracted phone (may be null)
+- email: Pre-extracted email (may be null)
+- messages: Array of message strings from this contact
 - ner_entities: Pre-extracted entities (emails, phones, urls, job_titles, organizations, skills, salaries, location)
+- accountHolderName: Name of the LinkedIn account owner (NEVER extract this person's phone/email as the contact's info)
 
 
 REQUIRED OUTPUT FORMAT (Return ONLY valid JSON, no markdown, no code blocks):
@@ -43,28 +48,43 @@ REQUIRED OUTPUT FORMAT (Return ONLY valid JSON, no markdown, no code blocks):
   "contacts": [
     {
       "full_name": "string",
-      "email": "string or null",
+      "email": "string (lowercase) or null",
       "phone": "string (digits only) or null",
       "company_name": "string or null",
       "job_title": "string or null",
       "city": "string or null",
+      "state": "string or null",
+      "country": "string or null (default 'US' if USA-context)",
       "linkedin_id": "string (linkedInUrl)",
       "linkedin_internal_id": "string",
       "source_type": "bot_linkedin_message_extraction",
-      "raw_payload": {}
+      "source_reference": "string (linkedInUrl — same as linkedin_id)",
+      "raw_payload": {
+        "contactHeadline": "string (from input contactHeadline)",
+        "messages": ["array of original message strings from input"],
+        "ner_entities": {"copy ner_entities object from input as-is"}
+      }
     }
   ],
   "positions": [
     {
       "source": "bot_linkedin_message_extraction",
-      "source_uid": "string (linkedin_internal_id)",
-      "title": "string (job title)",
-      "company": "string (company name)",
-      "location": "string (job location)",
-      "description": "string (full job description from message)",
-      "contact_info": "string - MUST be formatted EXACTLY as: 'Email: <email or empty>, Phone: <phone or empty>, apply_url: <url or empty>'",
-      "notes": "string (any extra info such as salary, stack, etc.)",
-      "payload": {}
+      "source_uid": "string (linkedin_internal_id of the recruiter)",
+      "title": "string (job title mentioned in message, e.g. 'Software Developer 2')",
+      "company": "string (hiring company name, e.g. 'Texas Department of Public Safety')",
+      "location": "string (job location, e.g. 'Austin, TX')",
+      "description": "string (full job description extracted from message text)",
+      "contact_info": "string - MUST be formatted EXACTLY as: 'Email: <recruiter email or empty>, Phone: <recruiter phone or empty>, apply_url: <url or empty>'",
+      "notes": "string (salary/rate, tech stack, visa requirements, contract type, benefits, etc.)",
+      "payload": {
+        "recruiter_name": "string (contactName of the sender)",
+        "recruiter_email": "string (recruiter's email)",
+        "recruiter_company": "string (recruiter's company from contactHeadline)",
+        "recruiter_linkedin": "string (linkedInUrl)",
+        "messages": ["array of original message strings"],
+        "skills": ["array of extracted skills from ner_entities"],
+        "salaries": ["array of extracted salary figures"]
+      }
     }
   ]
 }
