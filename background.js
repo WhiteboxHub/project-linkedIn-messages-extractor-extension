@@ -310,6 +310,16 @@ async function syncToWBL(extractedData, wblConfig) {
   const baseUrl = wblConfig.wblApiUrl.replace(/\/$/, '');
   const results = { contacts: null, positions: null };
 
+  // ── DEBUG: Log what syncToWBL receives ──────────────────────────────────
+  console.log('=== syncToWBL ENTRY ===');
+  console.log('Contacts received:', extractedData.contacts?.length || 0);
+  console.log('Positions received:', extractedData.positions?.length || 0);
+  if (extractedData.positions && extractedData.positions.length > 0) {
+    console.log('First position sample:', JSON.stringify(extractedData.positions[0], null, 2));
+  } else {
+    console.warn('⚠️ NO POSITIONS in extractedData! The LLM did not return any positions.');
+  }
+
   // Step 1: Sync contacts
   if (extractedData.contacts && extractedData.contacts.length > 0) {
     const version = chrome.runtime.getManifest().version;
@@ -355,6 +365,7 @@ async function syncToWBL(extractedData, wblConfig) {
     }));
 
     console.log(`Syncing ${positions.length} positions to WBL (Candidate ID: ${candidateId})...`);
+    console.log("Position payload being sent:", JSON.stringify({ positions: positions }, null, 2));
     const posRes = await authenticatedFetch(
       `${baseUrl}/email-positions/bulk`,
       {
@@ -368,10 +379,14 @@ async function syncToWBL(extractedData, wblConfig) {
 
     if (!posRes.ok) {
       const errText = await posRes.text();
+      console.error(`Position sync failed (${posRes.status}):`, errText);
       throw new Error(`Position sync failed (${posRes.status}): ${errText}`);
     }
     results.positions = await posRes.json();
-    console.log("Position sync result:", results.positions);
+    console.log("Position sync result:", JSON.stringify(results.positions, null, 2));
+    if (results.positions.failed_contacts && results.positions.failed_contacts.length > 0) {
+      console.error("⚠️ FAILED POSITIONS:", JSON.stringify(results.positions.failed_contacts, null, 2));
+    }
   }
 
   // Step 3: Log activity to job_activity_log
@@ -549,7 +564,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         }
 
+        // ── DEBUG: Log what sync_to_wbl handler receives ──────────────────
+        console.log('=== sync_to_wbl HANDLER ===');
+        console.log('message.data keys:', Object.keys(message.data || {}));
+        console.log('message.data.contacts:', message.data?.contacts?.length || 0);
+        console.log('message.data.positions:', message.data?.positions?.length || 0);
+        console.log('wblConfig keys:', Object.keys(wblConfig));
+        console.log('wblApiUrl:', wblConfig.wblApiUrl);
+        console.log('wblCandidateId:', wblConfig.wblCandidateId);
+
         const results = await syncToWBL(message.data, wblConfig);
+        
+        console.log('=== sync_to_wbl COMPLETE ===');
+        console.log('Final results:', JSON.stringify(results, null, 2));
         sendResponse({ success: true, results: results });
       } catch (error) {
         console.error("WBL sync error:", error);

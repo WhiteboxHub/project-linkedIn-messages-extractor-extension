@@ -349,15 +349,42 @@
     return threadId.replace(/^\d+-/, '');
   }
 
-  // Reads ONLY the recruiter's messages from the currently active thread.
+  // Gets the logged-in user's LinkedIn internal ID from the nav bar profile link
+  function getAccountHolderProfileId() {
+    // Method 1: Nav bar profile link (most reliable)
+    const navLink = document.querySelector('a[href*="linkedin.com/in/"].global-nav__primary-link--me-menu') ||
+                    document.querySelector('.global-nav__me a[href*="linkedin.com/in/"]') ||
+                    document.querySelector('a.ember-view.global-nav__primary-link[href*="/in/"]');
+    if (navLink) {
+      const id = extractInternalIdFromHref(navLink.getAttribute('href'));
+      if (id) return id.toLowerCase();
+    }
+
+    // Method 2: Profile photo alt text contains profile URL
+    const feedIdentity = document.querySelector('.feed-identity-module__actor-meta a[href*="/in/"]');
+    if (feedIdentity) {
+      const id = extractInternalIdFromHref(feedIdentity.getAttribute('href'));
+      if (id) return id.toLowerCase();
+    }
+
+    // Method 3: Any nav link with the user's profile  
+    const anyMeLink = document.querySelector('.global-nav__me-content a[href*="/in/"]');
+    if (anyMeLink) {
+      const id = extractInternalIdFromHref(anyMeLink.getAttribute('href'));
+      if (id) return id.toLowerCase();
+    }
+
+    return null;
+  }
+
+  // Reads ONLY the OTHER person's messages from the currently active thread.
   //
-  // KEY INSIGHT: LinkedIn groups consecutive messages from ONE sender into a single
-  // <li class="msg-s-message-list__event">. The a11y heading confirms the sender:
-  //   "Man Pandey sent the following message at 2:28 PM" → recruiter
-  //   "Bindu Ganta sent the following messages at 11:50 AM" → self (skip)
-  //
-  // If ANY message in a group has the --sent indicator, the WHOLE GROUP is ours → skip.
-  // This is guaranteed by LinkedIn's DOM structure and cannot be bypassed.
+  // SELF-MESSAGE DETECTION (2024+ LinkedIn DOM):
+  // LinkedIn no longer uses a --sent CSS indicator. Instead, each message group
+  // has a .msg-s-message-group__meta section with the sender's profile link.
+  // We compare the sender's profile ID against the account holder's profile ID
+  // to determine if a message group belongs to the logged-in user (skip) or
+  // the other person (collect).
   async function readCurrentThreadMessages() {
     await waitForMessagesLoaded(7000);
 
@@ -370,6 +397,11 @@
     const convKey = getConversationKey();
     const senderMessages = [];
 
+    // Get account holder's profile ID for self-detection
+    const accountHolderId = getAccountHolderProfileId();
+    const accountHolderName = getAccountHolderName();
+    console.log('[Extractor] Account holder ID:', accountHolderId, 'Name:', accountHolderName);
+
     // Iterate through message GROUPS (each li = one sender's burst of messages)
     const messageGroups = Array.from(
       threadContainer.querySelectorAll('li.msg-s-message-list__event')
@@ -377,8 +409,6 @@
 
     for (const group of messageGroups) {
       // ── Filter 1: Conversation key (wrong thread check) ────────────────────
-      // Check the data-event-urn of the first message in this group against the
-      // current URL's conversation key. If it doesn't match, skip the whole group.
       if (convKey) {
         const firstEvent = group.querySelector('.msg-s-event-listitem[data-event-urn]');
         if (firstEvent) {
@@ -388,22 +418,46 @@
             continue; // This group belongs to a different conversation — skip
           }
         }
-        // If no event urn found in this group, check the a11y heading approach
-        // (some groups may be time separators without messages, skip those too)
         const hasMessages = group.querySelector('.msg-s-event-listitem__body');
         if (!hasMessages) continue;
       }
 
-      // ── Filter 2: Self-message group check ────────────────────────────────
-      // If ANY message in this group has the --sent indicator, ALL messages
-      // in this group came from us (the account holder). Skip the entire group.
-      const isSelfGroup =
-        group.querySelector('.msg-s-event-with-indicator__sending-indicator--sent') !== null ||
-        group.querySelector('[data-test-msg-cross-pillar-message-sending-indicator-presenter__sending-indicator--sent]') !== null;
+      // ── Filter 2: Self-message detection (Profile URL + Name matching) ─────
+      let isSelfGroup = false;
 
-      if (isSelfGroup) continue;
+      // Method A: Check sender profile link in msg-s-message-group__meta
+      const senderLink = group.querySelector('.msg-s-message-group__meta a[href*="linkedin.com/in/"]');
+      if (senderLink && accountHolderId) {
+        const senderId = extractInternalIdFromHref(senderLink.getAttribute('href'));
+        if (senderId && senderId.toLowerCase() === accountHolderId) {
+          isSelfGroup = true;
+        }
+      }
 
-      // ── Collect recruiter messages from this group ─────────────────────────
+      // Method B: Check sender name text against account holder name
+      if (!isSelfGroup && accountHolderName) {
+        const senderNameEl = group.querySelector('.msg-s-message-group__name');
+        if (senderNameEl) {
+          const senderName = senderNameEl.innerText?.trim() || '';
+          if (senderName && senderName.toLowerCase() === accountHolderName.toLowerCase()) {
+            isSelfGroup = true;
+          }
+        }
+      }
+
+      // Method C: Legacy --sent indicator (keep as fallback for older LinkedIn versions)
+      if (!isSelfGroup) {
+        isSelfGroup =
+          group.querySelector('.msg-s-event-with-indicator__sending-indicator--sent') !== null ||
+          group.querySelector('[data-test-msg-cross-pillar-message-sending-indicator-presenter__sending-indicator--sent]') !== null;
+      }
+
+      if (isSelfGroup) {
+        console.log('[Extractor] Skipping self-message group');
+        continue;
+      }
+
+      // ── Collect other person's messages from this group ─────────────────────
       const bodyEls = group.querySelectorAll('.msg-s-event-listitem__body');
       for (const el of bodyEls) {
         const txt = (el.innerText || '').trim();
@@ -633,8 +687,21 @@
       // Read ONLY this thread's messages (isolated, correct)
       const senderMessages = await readCurrentThreadMessages();
 
-      const phone = extractFirstPhoneFromMessages(senderMessages);
-      const email = extractFirstEmailFromMessages(senderMessages);
+      let phone = extractFirstPhoneFromMessages(senderMessages);
+      let email = extractFirstEmailFromMessages(senderMessages);
+
+      // ── Name-based self-email/phone filter ──────────────────────────────────
+      // If account holder name is "Jawahar Reddy" and email is "jawahar@gmail.com",
+      // the email prefix contains the account holder's first name → filter it out.
+      if (email && accountHolderName) {
+        const nameParts = accountHolderName.toLowerCase().split(/\s+/).filter(p => p.length > 2);
+        const emailPrefix = email.split('@')[0].toLowerCase();
+        const nameMatchesEmail = nameParts.some(part => emailPrefix.includes(part));
+        if (nameMatchesEmail) {
+          console.log(`[Extractor] Filtered self-email: "${email}" matches account holder name "${accountHolderName}"`);
+          email = null;
+        }
+      }
 
       let linkedInUrl = null;
       if (headerHref) {
