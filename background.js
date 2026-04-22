@@ -71,10 +71,10 @@ REQUIRED OUTPUT FORMAT (Return ONLY valid JSON, no markdown, no code blocks):
     {
       "source": "bot_linkedin_message_extraction",
       "source_uid": "string (extract actual Job ID from URL if available, otherwise null. DO NOT use recruiter ID)",
-      "title": "string (job title mentioned in message, e.g. 'Software Developer 2')",
-      "company": "string (hiring company name, e.g. 'Texas Department of Public Safety')",
-      "location": "string (job location, e.g. 'Austin, TX')",
-      "zip": "string or null (extract from job location or description)",
+      "title": "string (job title mentioned in message, max 500 chars)",
+      "company": "string (hiring company name, max 255 chars)",
+      "location": "string (job location, e.g. 'Austin, TX', max 255 chars)",
+      "zip": "string or null (numeric zip code only, max 20 chars)",
       "description": "string (full job description extracted from message text)",
       "contact_info": "string - MUST be formatted EXACTLY as: 'Email: <recruiter email or empty>, Phone: <recruiter phone or empty>, apply_url: <url or empty>'",
       "notes": "string (salary/rate, tech stack, visa requirements, contract type, benefits, etc.)",
@@ -341,7 +341,8 @@ async function syncToWBL(extractedData, wblConfig) {
 
   // Step 2: Sync positions
   if (extractedData.positions && extractedData.positions.length > 0) {
-    const candidateId = wblConfig.wblCandidateId ? parseInt(wblConfig.wblCandidateId) : null;
+    const parsedCandidate = parseInt(wblConfig.wblCandidateId);
+    const candidateId = !isNaN(parsedCandidate) ? parsedCandidate : null;
     const version = chrome.runtime.getManifest().version;
     
     // Attach source, candidate_id and version to each position
