@@ -374,6 +374,52 @@ async function syncToWBL(extractedData, wblConfig) {
     console.log("Position sync result:", results.positions);
   }
 
+  // Step 3: Log activity to job_activity_log
+  try {
+    const contactsInserted = results.contacts?.inserted || 0;
+    const positionsInserted = results.positions?.inserted || 0;
+    const totalInserted = contactsInserted + positionsInserted;
+    const contactsSkipped = results.contacts?.skipped || 0;
+    const positionsSkipped = results.positions?.skipped || 0;
+
+    const parsedCandidate = parseInt(wblConfig.wblCandidateId);
+    const candidateId = !isNaN(parsedCandidate) ? parsedCandidate : null;
+    const parsedEmployee = parseInt(wblConfig.wblEmployeeId);
+    const employeeId = !isNaN(parsedEmployee) ? parsedEmployee : null;
+
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+    const activityLog = {
+      job_id: 120,
+      candidate_id: candidateId,
+      employee_id: employeeId,
+      activity_date: today,
+      activity_count: totalInserted,
+      notes: `LinkedIn Extraction: ${contactsInserted} contacts inserted (${contactsSkipped} skipped), ${positionsInserted} positions inserted (${positionsSkipped} skipped)`
+    };
+
+    console.log("Logging activity:", activityLog);
+    const logRes = await authenticatedFetch(
+      `${baseUrl}/job_activity_logs`,
+      {
+        method: "POST",
+        body: JSON.stringify(activityLog)
+      },
+      wblConfig
+    );
+
+    if (logRes.ok) {
+      results.activityLog = await logRes.json();
+      console.log("Activity log result:", results.activityLog);
+    } else {
+      const errText = await logRes.text();
+      console.warn(`Activity log failed (${logRes.status}): ${errText}`);
+    }
+  } catch (logErr) {
+    // Don't fail the whole sync if activity logging fails
+    console.warn("Activity logging error (non-fatal):", logErr.message);
+  }
+
   return results;
 }
 
