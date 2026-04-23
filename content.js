@@ -586,7 +586,66 @@
         }
       };
     });
-    return { contacts, positions: [] };
+
+    // ── Local position extraction from NER entities ──────────────────────────
+    const positions = [];
+    for (const r of rows) {
+      const ner = r.ner_entities;
+      if (!ner) continue;
+
+      // Check if this conversation has any job-related content
+      const hasJobTitle = ner.job_titles && ner.job_titles.length > 0;
+      const hasOrg = ner.organizations && ner.organizations.length > 0;
+      const hasApplyUrl = ner.urls?.apply && ner.urls.apply.length > 0;
+      const hasSalary = ner.salaries && ner.salaries.length > 0;
+
+      // Only create a position if there's meaningful job info
+      if (hasJobTitle || hasApplyUrl || hasSalary) {
+        // Extract job URL ID for source_uid (e.g., from /jobs/view/4245161417)
+        let sourceUid = null;
+        const allUrls = (ner.urls?.all || []).join(' ');
+        const jobIdMatch = allUrls.match(/\/(?:jobs\/view|jobs)\/(\d{7,15})/);
+        if (jobIdMatch) sourceUid = jobIdMatch[1];
+
+        // Build description from messages
+        const description = (r.messages || []).join(' ').substring(0, 5000);
+
+        // Build contact_info string (filter out self-emails using name check)
+        let posEmail = ner.emails?.personal?.[0] || '';
+        if (posEmail && r.accountHolderName) {
+          const nameParts = r.accountHolderName.toLowerCase().split(/\s+/).filter(p => p.length > 2);
+          const prefix = posEmail.split('@')[0].toLowerCase();
+          if (nameParts.some(part => prefix.includes(part))) posEmail = '';
+        }
+        const phone = ner.phones?.[0] || '';
+        const applyUrl = ner.urls?.apply?.[0] || '';
+        const contactInfo = `Email: ${posEmail}, Phone: ${phone}, apply_url: ${applyUrl}`;
+
+        positions.push({
+          source: "bot_linkedin_message_extraction",
+          source_uid: sourceUid,
+          title: ner.job_titles?.[0] || null,
+          company: ner.organizations?.[0] || null,
+          location: r.contactLocation || ner.location || null,
+          zip: null,
+          description: description || null,
+          contact_info: contactInfo,
+          notes: hasSalary ? ner.salaries.join(', ') : null,
+          payload: {
+            recruiter_name: r.contactName || null,
+            recruiter_email: posEmail || null,
+            recruiter_company: r.contactHeadline || null,
+            recruiter_linkedin: r.linkedInUrl || null,
+            messages: r.messages || [],
+            skills: ner.skills || [],
+            salaries: ner.salaries || []
+          }
+        });
+      }
+    }
+
+    console.log(`[Fallback] Generated ${contacts.length} contacts, ${positions.length} positions from NER`);
+    return { contacts, positions };
   }
 
   // ─── WBL Sync ─────────────────────────────────────────────────────────────
@@ -715,6 +774,16 @@
 
       const linkedin_internal_id = extractInternalIdFromHref(headerHref || linkedInUrl) || '';
       const nerEntities = extractEntities(senderMessages, contactHeadline, contactLocation);
+      // Apply name-based filter to NER emails too (prevent self-email re-introduction)
+      let nerEmail = nerEntities.emails?.personal?.[0] || null;
+      if (nerEmail && accountHolderName) {
+        const nameParts = accountHolderName.toLowerCase().split(/\s+/).filter(p => p.length > 2);
+        const nerPrefix = nerEmail.split('@')[0].toLowerCase();
+        if (nameParts.some(part => nerPrefix.includes(part))) {
+          console.log(`[Extractor] Filtered self NER email: "${nerEmail}"`);
+          nerEmail = null;
+        }
+      }
 
       results.push({
         contactName: contactName || '',
@@ -723,7 +792,7 @@
         linkedInUrl: linkedInUrl || '',
         linkedin_internal_id: linkedin_internal_id || '',
         phone: phone || nerEntities.phones[0] || null,
-        email: email || nerEntities.emails.personal[0] || null,
+        email: email || nerEmail || null,
         messages: senderMessages,
         ner_entities: nerEntities,
         accountHolderName: accountHolderName || ''
