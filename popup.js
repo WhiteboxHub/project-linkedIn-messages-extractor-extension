@@ -204,7 +204,10 @@ document.addEventListener("DOMContentLoaded", () => {
         "wblEmail",
         "wblPassword",
         "wblEmployeeId",
-        "wblJobId"
+        "wblCandidateId",
+        "wblEmployeeIdHistory",
+        "wblCandidateIdHistory",
+        "wblApiUrlHistory"
       ]);
 
       if (wblResult.wblApiUrl) wblApiUrl.value = wblResult.wblApiUrl;
@@ -216,6 +219,25 @@ document.addEventListener("DOMContentLoaded", () => {
         wblCandidateId.value = wblResult.wblCandidateId;
       } else if (wblResult.wblJobId) {
         wblCandidateId.value = wblResult.wblJobId;
+      }
+
+      // Populate dropdowns
+      const employeeIdList = document.getElementById("employeeIdList");
+      if (wblResult.wblEmployeeIdHistory) {
+        wblResult.wblEmployeeIdHistory.forEach(id => {
+          const option = document.createElement("option");
+          option.value = id;
+          if (employeeIdList) employeeIdList.appendChild(option);
+        });
+      }
+
+      const candidateIdList = document.getElementById("candidateIdList");
+      if (wblResult.wblCandidateIdHistory) {
+        wblResult.wblCandidateIdHistory.forEach(id => {
+          const option = document.createElement("option");
+          option.value = id;
+          if (candidateIdList) candidateIdList.appendChild(option);
+        });
       }
 
     } catch (err) {
@@ -297,6 +319,22 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
+      // Get existing history
+      const histResult = await chrome.storage.sync.get(["wblEmployeeIdHistory", "wblCandidateIdHistory"]);
+      
+      let empHistory = histResult.wblEmployeeIdHistory || [];
+      if (config.wblEmployeeId && !empHistory.includes(config.wblEmployeeId)) {
+        empHistory.push(config.wblEmployeeId);
+      }
+
+      let candHistory = histResult.wblCandidateIdHistory || [];
+      if (config.wblCandidateId && !candHistory.includes(config.wblCandidateId)) {
+        candHistory.push(config.wblCandidateId);
+      }
+
+      config.wblEmployeeIdHistory = empHistory;
+      config.wblCandidateIdHistory = candHistory;
+
       await chrome.storage.sync.set(config);
       wblStatus.textContent = "✅ WBL settings saved!";
       wblStatus.className = "config-status saved";
@@ -316,7 +354,7 @@ document.addEventListener("DOMContentLoaded", () => {
       wblEmail: wblEmail.value,
       wblPassword: wblPassword.value,
       wblEmployeeId: wblEmployeeId.value,
-      wblJobId: wblJobId.value
+      wblCandidateId: wblCandidateId.value
     };
 
     if (!config.wblApiUrl || !config.wblEmail || !config.wblPassword) {
@@ -390,7 +428,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (msg.type === "progress") {
         updateStatus(msg.text, "processing", true);
       } else if (msg.type === "done") {
-        updateStatus("✅ Extraction completed! Files downloaded.", "success", false);
+        updateStatus("✅ Extraction completed!", "success", false);
         setTimeout(() => updateStatus("Status: Idle", "", false), 3000);
       } else if (msg.type === "error") {
         updateStatus("❌ " + msg.text, "error", false);

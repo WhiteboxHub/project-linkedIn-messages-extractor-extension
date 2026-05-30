@@ -284,7 +284,10 @@
     <div class="config-content" id="wblContent">
       <div class="config-group">
         <label for="wblApiUrl">WBL API URL:</label>
-        <input type="text" id="wblApiUrl" placeholder="https://api.whitebox-learning.com/api">
+        <select id="wblApiUrl" style="width: 100%; padding: 8px; border-radius: 8px; border: none; font-size: 12px; background: rgba(255,255,255,0.9); color: #333;">
+          <option value="https://api.whitebox-learning.com/api">Production (api.whitebox-learning.com)</option>
+          <option value="http://localhost:8000/api">Local Development (localhost:8000)</option>
+        </select>
       </div>
       <div class="config-group">
         <label for="wblEmail">WBL Email:</label>
@@ -296,11 +299,13 @@
       </div>
       <div class="config-group">
         <label for="wblEmployeeId">Employee ID:</label>
-        <input type="text" id="wblEmployeeId" placeholder="e.g., 351">
+        <input type="text" id="wblEmployeeId" placeholder="e.g., 351" list="employeeIdList">
+        <datalist id="employeeIdList"></datalist>
       </div>
       <div class="config-group">
         <label for="wblCandidateId">Candidate ID:</label>
-        <input type="text" id="wblCandidateId" placeholder="e.g., 120">
+        <input type="text" id="wblCandidateId" placeholder="e.g., 120" list="candidateIdList">
+        <datalist id="candidateIdList"></datalist>
       </div>
       <button class="save-config-btn" id="saveWblBtn" style="margin-bottom: 5px;">Save WBL Settings</button>
       <button class="save-config-btn" id="testWblBtn" style="margin-bottom: 5px;">Test WBL Connection</button>

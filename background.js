@@ -350,29 +350,38 @@ async function syncToWBL(extractedData, wblConfig) {
   }
 
   // Step 2: Sync positions
+  // Schema: EmailPositionBulkCreate expects key "positions" (List[EmailPositionCreate])
+  // EmailPositionORM fields: candidate_id, source, source_uid, extractor_version, title,
+  //   company, location, zip, description, contact_info, notes, payload, error_message
+  // NOTE: employee_id is NOT a column on email_positions table — do NOT send it.
   if (extractedData.positions && extractedData.positions.length > 0) {
     const parsedCandidate = parseInt(wblConfig.wblCandidateId);
     const candidateId = !isNaN(parsedCandidate) ? parsedCandidate : null;
     const version = chrome.runtime.getManifest().version;
     
-    // Attach source, candidate_id and version to each position
+    // Map only the fields that exist in EmailPositionCreate schema
     const positions = extractedData.positions.map(p => ({
-      ...p,
       candidate_id: candidateId,
-      extractor_version: version,
       source: p.source || "bot_linkedin_message_extraction",
+      source_uid: p.source_uid || null,
+      extractor_version: version,
+      title: p.title || null,
+      company: p.company || null,
+      location: p.location || null,
+      zip: p.zip || null,
+      description: p.description || null,
+      contact_info: p.contact_info || null,
+      notes: p.notes || null,
       payload: p.payload || null
     }));
 
     console.log(`Syncing ${positions.length} positions to WBL (Candidate ID: ${candidateId})...`);
-    console.log("Position payload being sent:", JSON.stringify({ positions: positions }, null, 2));
+    console.log("Position payload being sent:", JSON.stringify({ positions }, null, 2));
     const posRes = await authenticatedFetch(
       `${baseUrl}/email-positions/bulk`,
       {
         method: "POST",
-        body: JSON.stringify({ 
-          positions: positions
-        })
+        body: JSON.stringify({ positions })
       },
       wblConfig
     );
@@ -404,6 +413,8 @@ async function syncToWBL(extractedData, wblConfig) {
 
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
+    // job_activity_log Pydantic schema (JobActivityLogBase) uses "job_id".
+    // The util converts job_id → job_type_id internally when writing to the ORM.
     const activityLog = {
       job_id: 120,
       candidate_id: candidateId,

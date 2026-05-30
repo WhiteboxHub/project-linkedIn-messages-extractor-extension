@@ -7,6 +7,7 @@
   const NER_TITLE_RE = /\b(?:Senior|Sr\.?|Junior|Jr\.?|Lead|Principal|Staff|Associate|Mid(?:-level)?|Entry[-\s]level)?\s*(?:Software|Frontend|Back[-\s]?end|Full[-\s]?Stack|Mobile|iOS|Android|DevOps|MLOps|Cloud|Data|Platform|Site Reliability|Security|QA|Test|Product|Project|Program|Embedded|Network|AI|ML|Machine Learning|NLP|GenAI|UI\/UX|UX|UI|Graphic|Systems|Infrastructure|Solutions|Technical|Sales|Recruiting|Talent)\s+(?:Engineer|Developer|Architect|Manager|Lead|Director|Analyst|Designer|Consultant|Recruiter|Specialist|Associate|Coordinator|Researcher|Scientist)(?:\s+(?:I{1,3}|IV|V|1|2|3|4))?\b/gi;
   const NER_ORG_RE = /(?:at|@|with|from|joins?|joined?)\s+([A-Z][A-Za-z0-9&'\-\s]{1,30}(?:Inc\.?|LLC\.?|Ltd\.?|Corp\.?|Co\.?|Agency|Group|Solutions|Tech|Labs?|Systems|Services|Consulting|Digital|Global)?)(?=[.,:;!?]|\s|$)/g;
   const NER_SKILL_RE = /\b(?:React(?:\.js)?|Vue(?:\.js)?|Angular(?:\.js)?|Node(?:\.js)?|Next(?:\.js)?|TypeScript|JavaScript|Python|Java|Kotlin|Swift|Golang|Rust|C\+\+|C#|\.NET|PHP|Ruby|Django|FastAPI|Flask|Spring(?:\s+Boot)?|PostgreSQL|MySQL|MongoDB|Redis|Elasticsearch|Kafka|AWS|GCP|Azure|Docker|Kubernetes|Terraform|Ansible|Jenkins|CI\/CD|GraphQL|REST(?:ful)?|gRPC|Microservices?|TensorFlow|PyTorch|Pandas|NumPy|Spark|Hadoop|dbt|Snowflake|BigQuery)\b/gi;
+  const NER_LOCATION_RE = /\b(?:in|at|onsite|hybrid|located(?: in)?|relocate(?: to)?|Area)\s+([A-Z][a-zA-Z]*(?:[\s-][a-zA-Z]+){0,2},\s*[A-Z]{2})\b/gi;
 
   const GENERIC_EMAIL_PREFIXES = [
     'support', 'info', 'donotreply', 'noreply', 'admin', 'hr', 'no-reply',
@@ -139,6 +140,7 @@
     );
     const jobTitles = nerDedupe(nerMatches(fullText, NER_TITLE_RE));
     const orgs = nerDedupe(nerGroup1(fullText, NER_ORG_RE));
+    const locations = nerDedupe(nerGroup1(fullText, NER_LOCATION_RE));
     const skills = nerDedupe(nerMatches(fullText, NER_SKILL_RE));
     const salaries = nerDedupe(nerMatches(fullText, NER_SALARY_RE));
 
@@ -148,6 +150,7 @@
       urls: { apply: applyUrls, all: allUrls },
       job_titles: jobTitles,
       organizations: orgs,
+      locations: locations,
       skills,
       salaries,
       location: location || null,
@@ -543,10 +546,37 @@
     return { contacts: allContacts, positions: allPositions };
   }
 
+  // ── Headline parsers ──────────────────────────────────────────────────────
+  // Parses "Senior Recruiter at Google" | "Talent Acquisition @ Microsoft" | "HR Lead | Amazon"
+  function extractCompanyFromHeadline(headline) {
+    if (!headline) return null;
+    const patterns = [
+      // "at CompanyName" or "@ CompanyName"
+      /\b(?:at|@)\s+([A-Z][A-Za-z0-9\s&'.,''\-]{1,60})(?:\s*[\|·•\-,]|$)/,
+      // "| CompanyName" or "· CompanyName" at end
+      /[\|·•]\s*([A-Z][A-Za-z0-9\s&'.,''\-]{1,60})\s*$/,
+    ];
+    for (const re of patterns) {
+      const m = headline.match(re);
+      if (m && m[1]) return m[1].trim().replace(/[\|·•,.\-]+$/, '').trim();
+    }
+    return null;
+  }
+
+  // Parses job title from headline — everything before "at", "@", "|", "·", "•"
+  function extractTitleFromHeadline(headline) {
+    if (!headline) return null;
+    const m = headline.match(/^([^@|·•]+?)(?:\s+(?:at|@)\s|\s*[\|·•])/i);
+    if (m && m[1]) {
+      const title = m[1].trim().replace(/[,.\-]+$/, '').trim();
+      if (title.length > 2) return title;
+    }
+    return null;
+  }
+
   function generateFallbackJSON(rows) {
     const filtered = rows.filter(r => r.linkedInUrl && r.email);
     const contacts = filtered.map(r => {
-      // Parse city/state/country from contactLocation like "Austin, TX" or "New York, NY, US"
       let city = null, state = null, country = null;
       if (r.contactLocation) {
         const parts = r.contactLocation.split(',').map(s => s.trim());
@@ -567,13 +597,12 @@
         full_name: r.contactName || null,
         email: r.email ? r.email.toLowerCase() : null,
         phone: r.phone ? r.phone.replace(/\D/g, '') : null,
-        company_name: null,
-        job_title: null,
+        company_name: extractCompanyFromHeadline(r.contactHeadline) || null,
+        job_title: extractTitleFromHeadline(r.contactHeadline) || null,
         city,
         state,
         country,
         postal_code: null,
-        zip: null,
         linkedin_id: r.linkedInUrl || null,
         linkedin_internal_id: r.linkedin_internal_id || null,
         source_type: "bot_linkedin_message_extraction",
@@ -593,55 +622,90 @@
       const ner = r.ner_entities;
       if (!ner) continue;
 
-      // Check if this conversation has any job-related content
-      const hasJobTitle = ner.job_titles && ner.job_titles.length > 0;
-      const hasOrg = ner.organizations && ner.organizations.length > 0;
-      const hasApplyUrl = ner.urls?.apply && ner.urls.apply.length > 0;
-      const hasSalary = ner.salaries && ner.salaries.length > 0;
+      const hasJobTitle  = ner.job_titles && ner.job_titles.length > 0;
+      const hasOrg       = ner.organizations && ner.organizations.length > 0;
+      const hasApplyUrl  = ner.urls?.apply && ner.urls.apply.length > 0;
+      const hasSalary    = ner.salaries && ner.salaries.length > 0;
+      const hasEmail     = ner.emails?.personal && ner.emails.personal.length > 0;
+      const hasPhone     = ner.phones && ner.phones.length > 0;
 
-      // Only create a position if there's meaningful job info
-      if (hasJobTitle || hasApplyUrl || hasSalary) {
-        // Extract job URL ID for source_uid (e.g., from /jobs/view/4245161417)
-        let sourceUid = null;
-        const allUrls = (ner.urls?.all || []).join(' ');
-        const jobIdMatch = allUrls.match(/\/(?:jobs\/view|jobs)\/(\d{7,15})/);
-        if (jobIdMatch) sourceUid = jobIdMatch[1];
+      // Create a position if any meaningful signal is present —
+      // job title, company, salary, apply URL, recruiter email, or recruiter phone
+      if (!hasJobTitle && !hasOrg && !hasApplyUrl && !hasSalary && !hasEmail && !hasPhone) continue;
 
-        // Build description from messages
-        const description = (r.messages || []).join(' ').substring(0, 5000);
+      // ── source_uid: extract Job ID from LinkedIn job URL ─────────────────
+      let sourceUid = null;
+      const allUrls = (ner.urls?.all || []).join(' ');
+      const jobIdMatch = allUrls.match(/\/(?:jobs\/view|jobs)\/(\d{7,15})/);
+      if (jobIdMatch) sourceUid = jobIdMatch[1];
 
-        // Build contact_info string (filter out self-emails using name check)
-        let posEmail = ner.emails?.personal?.[0] || '';
-        if (posEmail && r.accountHolderName) {
+      // ── description: full message text (capped at 5000 chars) ───────────
+      const description = (r.messages || []).join(' ').substring(0, 5000) || null;
+
+      // ── contact_info: recruiter email (non-self) ─────────────────────────
+      let posEmail = '';
+      for (const em of (ner.emails?.personal || [])) {
+        if (r.accountHolderName) {
           const nameParts = r.accountHolderName.toLowerCase().split(/\s+/).filter(p => p.length > 2);
-          const prefix = posEmail.split('@')[0].toLowerCase();
-          if (nameParts.some(part => prefix.includes(part))) posEmail = '';
+          const prefix = em.split('@')[0].toLowerCase();
+          if (nameParts.some(part => prefix.includes(part))) continue; // skip own email
         }
-        const phone = ner.phones?.[0] || '';
-        const applyUrl = ner.urls?.apply?.[0] || '';
-        const contactInfo = `Email: ${posEmail}, Phone: ${phone}, apply_url: ${applyUrl}`;
-
-        positions.push({
-          source: "bot_linkedin_message_extraction",
-          source_uid: sourceUid,
-          title: ner.job_titles?.[0] || null,
-          company: ner.organizations?.[0] || null,
-          location: r.contactLocation || ner.location || null,
-          zip: null,
-          description: description || null,
-          contact_info: contactInfo,
-          notes: hasSalary ? ner.salaries.join(', ') : null,
-          payload: {
-            recruiter_name: r.contactName || null,
-            recruiter_email: posEmail || null,
-            recruiter_company: r.contactHeadline || null,
-            recruiter_linkedin: r.linkedInUrl || null,
-            messages: r.messages || [],
-            skills: ner.skills || [],
-            salaries: ner.salaries || []
-          }
-        });
+        posEmail = em.toLowerCase();
+        break;
       }
+
+      // ── contact_info: recruiter phone (non-self) ─────────────────────────
+      // Best-effort: we don't have a reliable way to detect self-phone without
+      // the account holder's phone number, so take the first phone found.
+      const posPhone = (ner.phones && ner.phones.length > 0) ? ner.phones[0] : '';
+
+      // ── contact_info: apply URL ──────────────────────────────────────────
+      const applyUrl = ner.urls?.apply?.[0] || '';
+
+      // Format exactly as backend expects
+      const contactInfo = `Email: ${posEmail}, Phone: ${posPhone}, apply_url: ${applyUrl}`;
+
+      // ── title: NER job_titles first, then parse from recruiter headline ──
+      const title = (ner.job_titles && ner.job_titles.length > 0)
+        ? ner.job_titles[0]
+        : extractTitleFromHeadline(r.contactHeadline);
+
+      // ── company: NER organizations first, then parse from headline ───────
+      const company = (ner.organizations && ner.organizations.length > 0)
+        ? ner.organizations[0]
+        : extractCompanyFromHeadline(r.contactHeadline);
+
+      // ── location: NER-extracted location (from messages + headline) ──────
+      const location = (ner.locations && ner.locations.length > 0)
+        ? ner.locations[0]
+        : (ner.location || r.contactLocation || null);
+
+      // ── notes: salary, skills ─────────────────────────────────────────────
+      const notesParts = [];
+      if (hasSalary) notesParts.push(ner.salaries.join(', '));
+      if (ner.skills && ner.skills.length > 0) notesParts.push('Skills: ' + ner.skills.slice(0, 10).join(', '));
+      const notes = notesParts.length > 0 ? notesParts.join(' | ') : null;
+
+      positions.push({
+        source: "bot_linkedin_message_extraction",
+        source_uid: sourceUid,
+        title: title || null,
+        company: company || null,
+        location: location || null,
+        zip: null,
+        description,
+        contact_info: contactInfo,
+        notes,
+        payload: {
+          recruiter_name: r.contactName || null,
+          recruiter_email: posEmail || null,
+          recruiter_company: company || null,
+          recruiter_linkedin: r.linkedInUrl || null,
+          messages: r.messages || [],
+          skills: ner.skills || [],
+          salaries: ner.salaries || []
+        }
+      });
     }
 
     console.log(`[Fallback] Generated ${contacts.length} contacts, ${positions.length} positions from NER`);
@@ -806,15 +870,7 @@
     const unique = mergeAndDedupe(results);
     sendUpdate("progress", `${unique.length} unique records from ${results.length} conversations`);
 
-    // Download JSON backup
-    const jsonBlob = new Blob([JSON.stringify(unique, null, 2)], { type: "application/json" });
-    const jsonUrl = URL.createObjectURL(jsonBlob);
-    const ajson = document.createElement("a");
-    ajson.href = jsonUrl;
-    ajson.download = "linkedin_messages_backup.json";
-    ajson.click();
-    URL.revokeObjectURL(jsonUrl);
-    sendUpdate("progress", "JSON backup downloaded.");
+    // (JSON backup download removed per user request)
 
     // LLM extraction
     let extractedData = null;
