@@ -571,7 +571,7 @@
       const title = m[1].trim().replace(/[,.\-]+$/, '').trim();
       if (title.length > 2) return title;
     }
-    return null;
+    return headline.trim();
   }
 
   function generateFallbackJSON(rows) {
