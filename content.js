@@ -3,11 +3,18 @@
   const NER_EMAIL_RE = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g;
   const NER_PHONE_RE = /(?:\+?[\d]{1,4}[\s\-.]?)?(?:\(?\d{2,5}\)?[\s\-.]?)?\d{3,4}[\s\-.]?\d{3,5}(?:\s?(?:ext|x|ext\.)\s?\d{1,5})?/g;
   const NER_URL_RE = /\b(?:https?:\/\/|www\.|linkedin\.com\/)[^\s"'<>)\]]+\b/gi;
-  const NER_SALARY_RE = /\$\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?\s*(?:[-–to]+\s*\$?\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?)?(?:\s*\/\s*(?:year|yr|annum|month|hr|hour))?/g;
-  const NER_TITLE_RE = /\b(?:Senior|Sr\.?|Junior|Jr\.?|Lead|Principal|Staff|Associate|Mid(?:-level)?|Entry[-\s]level)?\s*(?:Software|Frontend|Back[-\s]?end|Full[-\s]?Stack|Mobile|iOS|Android|DevOps|MLOps|Cloud|Data|Platform|Site Reliability|Security|QA|Test|Product|Project|Program|Embedded|Network|AI|ML|Machine Learning|NLP|GenAI|UI\/UX|UX|UI|Graphic|Systems|Infrastructure|Solutions|Technical|Sales|Recruiting|Talent)\s+(?:Engineer|Developer|Architect|Manager|Lead|Director|Analyst|Designer|Consultant|Recruiter|Specialist|Associate|Coordinator|Researcher|Scientist)(?:\s+(?:I{1,3}|IV|V|1|2|3|4))?\b/gi;
-  const NER_ORG_RE = /(?:at|@|with|from|joins?|joined?)\s+([A-Z][A-Za-z0-9&'\-\s]{1,30}(?:Inc\.?|LLC\.?|Ltd\.?|Corp\.?|Co\.?|Agency|Group|Solutions|Tech|Labs?|Systems|Services|Consulting|Digital|Global)?)(?=[.,:;!?]|\s|$)/g;
+  
+  // Advanced Salary extraction (e.g., $65/hr, Up to $65/hr, 100k-120k, Pay: $65/hr)
+  const NER_SALARY_RE = /(?:(?:Pay|Salary|Rate|Compensation)[\s:]*(?:Up\s+to\s+)?)?(?:\$\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?\s*(?:[-–to]+\s*\$?\s?\d{2,3}(?:[,.]?\d{3})?(?:\s?[kK])?)?(?:\s*\/\s*(?:year|yr|annum|month|hr|hour))?)/gi;
+  
+  // Advanced Title extraction (Conversational or Structured "Role: AI Engineer")
+  const NER_TITLE_RE = /(?:(?:Role|Title|Position|Job Title|Opportunity)[\s:]+([A-Z][a-zA-Z\s\-\/]{3,40}))|\b(?:Senior|Sr\.?|Junior|Jr\.?|Lead|Principal|Staff|Associate|Mid(?:-level)?|Entry[-\s]level)?\s*(?:Software|Frontend|Back[-\s]?end|Full[-\s]?Stack|Mobile|iOS|Android|DevOps|MLOps|Cloud|Data|Platform|Site Reliability|Security|QA|Test|Product|Project|Program|Embedded|Network|AI|ML|Machine Learning|NLP|GenAI|UI\/UX|UX|UI|Graphic|Systems|Infrastructure|Solutions|Technical|Sales|Recruiting|Talent)\s+(?:Engineer|Developer|Architect|Manager|Lead|Director|Analyst|Designer|Consultant|Recruiter|Specialist|Associate|Coordinator|Researcher|Scientist)(?:\s+(?:I{1,3}|IV|V|1|2|3|4))?\b/gi;
+  
+  // Advanced Org extraction (Conversational "at XYZ" or Structured "Organization: XYZ")
+  const NER_ORG_RE = /(?:(?:at|@|with|from|joins?|joined?)\s+|(?:\b(?:Organization|Client|Company|Client Name|Employer)[\s:]+))([A-Z][A-Za-z0-9&'\-\s]{1,40}(?:Inc\.?|LLC\.?|Ltd\.?|Corp\.?|Co\.?|Agency|Group|Solutions|Tech|Labs?|Systems|Services|Consulting|Digital|Global|AI)?)(?=[.,:;!?\n\r]|\s|$)/gi;
+  
   const NER_SKILL_RE = /\b(?:React(?:\.js)?|Vue(?:\.js)?|Angular(?:\.js)?|Node(?:\.js)?|Next(?:\.js)?|TypeScript|JavaScript|Python|Java|Kotlin|Swift|Golang|Rust|C\+\+|C#|\.NET|PHP|Ruby|Django|FastAPI|Flask|Spring(?:\s+Boot)?|PostgreSQL|MySQL|MongoDB|Redis|Elasticsearch|Kafka|AWS|GCP|Azure|Docker|Kubernetes|Terraform|Ansible|Jenkins|CI\/CD|GraphQL|REST(?:ful)?|gRPC|Microservices?|TensorFlow|PyTorch|Pandas|NumPy|Spark|Hadoop|dbt|Snowflake|BigQuery)\b/gi;
-  const NER_LOCATION_RE = /\b(?:in|at|onsite|hybrid|located(?: in)?|relocate(?: to)?|Area)\s+([A-Z][a-zA-Z]*(?:[\s-][a-zA-Z]+){0,2},\s*[A-Z]{2})\b/gi;
+  const NER_LOCATION_RE = /\b(?:in|at|onsite|hybrid|located(?: in)?|relocate(?: to)?|Area|Location)[\s:]*([A-Z][a-zA-Z]*(?:[\s-][a-zA-Z]+){0,2}(?:,\s*[A-Z]{2})?)\b/gi;
 
   const GENERIC_EMAIL_PREFIXES = [
     'support', 'info', 'donotreply', 'noreply', 'admin', 'hr', 'no-reply',
@@ -138,7 +145,14 @@
     const applyUrls = allUrls.filter(url =>
       /apply|job|career|position|opening|role|hiring|recruit|lever\.co|greenhouse\.io|ashbyhq|workable|breezy|smartrecruiters|icims|taleo|workday|bamboo/i.test(url)
     );
-    const jobTitles = nerDedupe(nerMatches(fullText, NER_TITLE_RE));
+    const jobTitlesMatch = [];
+    let m;
+    const titleRe = new RegExp(NER_TITLE_RE.source, NER_TITLE_RE.flags);
+    while ((m = titleRe.exec(fullText)) !== null) {
+      jobTitlesMatch.push((m[1] || m[0]).trim());
+    }
+    const jobTitles = nerDedupe(jobTitlesMatch);
+
     const orgs = nerDedupe(nerGroup1(fullText, NER_ORG_RE));
     const locations = nerDedupe(nerGroup1(fullText, NER_LOCATION_RE));
     const skills = nerDedupe(nerMatches(fullText, NER_SKILL_RE));

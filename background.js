@@ -233,7 +233,7 @@ function isTokenExpired(token) {
 // Authenticates with WBL API and returns access token
 async function wblLogin(apiUrl, email, password) {
   const loginUrl = `${apiUrl.replace(/\/$/, '')}/login`;
-  
+
   const params = new URLSearchParams();
   params.append('username', email);
   params.append('password', password);
@@ -252,7 +252,7 @@ async function wblLogin(apiUrl, email, password) {
       if (typeof errorMsg === 'object') {
         errorMsg = JSON.stringify(errorMsg);
       }
-    } catch {}
+    } catch { }
     throw new Error(errorMsg);
   }
 
@@ -358,7 +358,7 @@ async function syncToWBL(extractedData, wblConfig) {
     const parsedCandidate = parseInt(wblConfig.wblCandidateId);
     const candidateId = !isNaN(parsedCandidate) ? parsedCandidate : null;
     const version = chrome.runtime.getManifest().version;
-    
+
     // Map only the fields that exist in EmailPositionCreate schema
     const positions = extractedData.positions.map(p => ({
       candidate_id: candidateId,
@@ -585,7 +585,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log('wblCandidateId:', wblConfig.wblCandidateId);
 
         const results = await syncToWBL(message.data, wblConfig);
-        
+
         console.log('=== sync_to_wbl COMPLETE ===');
         console.log('Final results:', JSON.stringify(results, null, 2));
         sendResponse({ success: true, results: results });
